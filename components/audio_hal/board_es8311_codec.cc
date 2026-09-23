@@ -163,6 +163,8 @@ void Es8311Codec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_nu
         // for the register backup/restore needed to power it down.
         .allow_pd = false,
         .intr_priority = 0,
+        .tx_destination = I2S_DESTINATION_DMA,
+        .rx_destination = I2S_DESTINATION_DMA,
     };
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_));
 

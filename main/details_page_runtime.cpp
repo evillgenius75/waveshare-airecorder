@@ -30,7 +30,7 @@ std::atomic<bool> s_pending_back{false};
 // Re-transcription runs on a short-lived worker: reloading the WAV and starting the pipeline is far
 // too stack-heavy for the input/touch task that dispatches the tap. The flag serializes it to one
 // at a time (BeginArchivedTranscription also refuses to start over an in-flight request).
-constexpr uint32_t kTranscribeWorkerStackWords = 8192;
+constexpr uint32_t kTranscribeWorkerStackWords = 4096;
 std::atomic<bool> s_transcribe_worker_active{false};
 
 void TranscribeWorker(void* arg)

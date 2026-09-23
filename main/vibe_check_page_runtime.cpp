@@ -33,7 +33,7 @@ int32_t s_interaction_generation = 1;
 // starting the transcription pipeline is far too heavy for the small-stack input task that
 // dispatches the tap/press (it overflows the touch task). The flag serializes it to one at a
 // time; BeginArchivedTranscription also refuses to start over an in-flight request.
-constexpr uint32_t kTranscribeWorkerStackWords = 8192;
+constexpr uint32_t kTranscribeWorkerStackWords = 4096;
 std::atomic<bool> s_transcribe_worker_active{false};
 
 void TranscribeWorker(void* arg)
