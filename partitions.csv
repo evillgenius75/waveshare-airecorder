@@ -1,7 +1,17 @@
-# Waveshare ESP32-S3-ePaper-3.97: 16 MB flash, OTA (two app slots).
-# Name,   Type, SubType, Offset,   Size,     Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-otadata,  data, ota,     0xf000,   0x2000,
-phy_init, data, phy,     0x11000,  0x1000,
-ota_0,    app,  ota_0,   0x20000,  0x7F0000,
-ota_1,    app,  ota_1,   0x810000, 0x7F0000,
+# Waveshare ESP32-S3-ePaper-3.97: 16 MB flash, OTA (two app slots), core dump.
+#
+# This layout is final for devices in the field: OTA can replace the app but never this
+# table, so any later change means reflashing over USB. nvs, otadata and phy_init keep their
+# original offsets so saved settings survive the move to this layout.
+#
+# nvs_keys is reserved for NVS encryption keys if flash-encryption-based NVS encryption is
+# ever chosen (the HMAC-based scheme does not need it). coredump holds the last crash in ELF
+# form; read it with `idf.py coredump-info`.
+# Name,    Type, SubType,  Offset,    Size,     Flags
+nvs,       data, nvs,      0x9000,    0x6000,
+otadata,   data, ota,      0xf000,    0x2000,
+phy_init,  data, phy,      0x11000,   0x1000,
+nvs_keys,  data, nvs_keys, 0x12000,   0x1000,
+ota_0,     app,  ota_0,    0x20000,   0x7E0000,
+ota_1,     app,  ota_1,    0x800000,  0x7E0000,
+coredump,  data, coredump, 0xFE0000,  0x20000,

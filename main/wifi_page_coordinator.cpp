@@ -71,6 +71,7 @@ void WifiPageCoordinator::RefreshFromService(const wifi_service::UiState& ui_sta
             .ssid = network.ssid,
             .current_network = ui_state.connected && ui_state.ssid == network.ssid,
             .private_network = !network.IsOpen(),
+            .saved = network.saved,
             .signal_strength = network.rssi >= -60 ? epaper_ui::NetworkSignalStrength::kStrong
                                                    : epaper_ui::NetworkSignalStrength::kMedium,
         });
@@ -86,6 +87,7 @@ void WifiPageCoordinator::RefreshFromService(const wifi_service::UiState& ui_sta
                 .ssid = ui_state.ssid,
                 .current_network = true,
                 .private_network = true,
+                .saved = wifi_service::IsNetworkSaved(ui_state.ssid),
                 .signal_strength = ui_state.rssi >= -60 ? epaper_ui::NetworkSignalStrength::kStrong
                                                         : epaper_ui::NetworkSignalStrength::kMedium,
             });
@@ -280,6 +282,16 @@ epaper_ui::WifiPageState WifiPageCoordinator::BuildState() const
         IsRoleFocused(page_navigation::NavigationItemRole::kWifiPagePasswordVisibilityButton);
     if (!state.password_input.focused) {
         state.password_input.active = false;
+    }
+    // A saved network needs no password: say so where the password would go.
+    const std::string selected_ssid = SelectedNetworkSsid();
+    const auto selected = std::find_if(networks_.begin(), networks_.end(),
+                                       [&](const NetworkEntry& entry) {
+                                           return entry.ssid == selected_ssid;
+                                       });
+    if (selected != networks_.end() && selected->saved &&
+        state.password_input.value_text.empty()) {
+        state.password_input.placeholder_text = "Saved - just press Connect";
     }
 
     state.scan_button = {

@@ -17,9 +17,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "deferred_event.h"
 #include "followup_task_config.h"
 #include "gemini_service.h"
 #include "recording_archive_service.h"
+#include "atomic_file.h"
 #include "storage_service.h"
 
 namespace summary_service {
@@ -60,6 +62,7 @@ struct QueuedRequest {
 };
 
 std::mutex s_mutex;
+using EventScope = deferred_event::Scope<Event>;
 EventHandler s_event_handler = nullptr;
 void* s_event_context = nullptr;
 Snapshot s_snapshot = {};
@@ -518,13 +521,7 @@ bool ReadTextFile(const std::string& path, std::string* out)
 
 bool WriteTextFile(const std::string& path, const std::string& text)
 {
-    FILE* file = std::fopen(path.c_str(), "wb");
-    if (file == nullptr) {
-        return false;
-    }
-    const bool ok = text.empty() || std::fwrite(text.data(), 1, text.size(), file) == text.size();
-    std::fclose(file);
-    return ok;
+    return atomic_file::Write(path, text);
 }
 
 void ParseMetadataJson(const std::string& json_text, CacheMetadata* metadata)
@@ -888,17 +885,14 @@ GenerationResult GenerateSummary(SummaryKind kind)
 
 // --- snapshot / events ------------------------------------------------------
 
+// Queues the current snapshot for delivery once the active EventScope releases s_mutex.
+// Handlers never run under s_mutex (see deferred_event.h).
 void NotifyLocked()
 {
-    EventHandler handler = s_event_handler;
-    void* context = s_event_context;
-    if (handler == nullptr) {
+    if (s_event_handler == nullptr) {
         return;
     }
-    const Event event = {
-        .snapshot = s_snapshot,
-    };
-    handler(event, context);
+    EventScope::Post(s_event_handler, s_event_context, Event{.snapshot = s_snapshot});
 }
 
 bool PersistSummary(SummaryKind kind, const GenerationResult& result)
@@ -914,7 +908,7 @@ bool PersistSummary(SummaryKind kind, const GenerationResult& result)
 
 void CompleteSummaryRequest(SummaryKind kind, const GenerationResult& result)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     CacheEntrySnapshot* target = kind == SummaryKind::kTodos ? &s_snapshot.todos : &s_snapshot.notes;
     s_snapshot.request.in_flight = false;
     s_snapshot.request.kind = kind;
@@ -969,7 +963,7 @@ esp_err_t Init()
 {
     bool should_refresh = false;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (s_snapshot.initialized) {
             return ESP_OK;
         }
@@ -1002,14 +996,14 @@ esp_err_t Init()
 
 void SetEventHandler(EventHandler handler, void* context)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     s_event_handler = handler;
     s_event_context = context;
 }
 
 Snapshot GetSnapshot()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     return s_snapshot;
 }
 
@@ -1018,7 +1012,7 @@ bool RefreshCachedSummaries()
     LoadCacheContext context = {};
     (void)storage_service::RunWithMountedFilesystem(LoadCacheOnMountedFilesystem, &context);
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.storage_available = context.storage_available;
         s_snapshot.notes = std::move(context.notes);
         s_snapshot.todos = std::move(context.todos);
@@ -1029,7 +1023,7 @@ bool RefreshCachedSummaries()
 
 void ResetForFormat()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     // If the service was never initialized, its cache is only on the SD card the format just wiped;
     // a later Init() will read the empty card. If it was initialized, drop the in-memory summaries
     // (Init() is one-shot, so it won't re-read) and notify so the Summarize page shows empty state.
@@ -1050,7 +1044,7 @@ bool RequestSummary(SummaryKind kind)
 
     QueueHandle_t queue = nullptr;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (!s_snapshot.initialized || s_queue == nullptr || s_snapshot.request.in_flight) {
             return false;
         }
@@ -1070,7 +1064,7 @@ bool RequestSummary(SummaryKind kind)
         return true;
     }
 
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     s_snapshot.request.in_flight = false;
     s_snapshot.request.phase = RequestPhase::kFailed;
     s_snapshot.request.status_message = "Unable to queue summary request";

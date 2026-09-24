@@ -27,6 +27,7 @@ Castor has no touchscreen; everything runs on a rocker and two buttons.
 | Rocker up / down | Move the selection; hold to repeat |
 | Rocker down, held | Back out of a list or card you've entered |
 | Rocker middle, or BOOT tap | Select / confirm |
+| Rocker middle, held | Go Home from any page |
 | BOOT, press and hold | Record: starts when you hold, stops when you let go |
 | PWR, tap | Lock or unlock the screen |
 | PWR, hold about 1 second | Shut down (asks to confirm) |

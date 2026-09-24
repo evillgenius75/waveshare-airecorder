@@ -25,6 +25,7 @@ struct Layout {
     UiRect enable_otg_button = {};
     UiRect format_sd_button = {};
     UiRect manual_onboarding_button = {};
+    UiRect volume_button = {};
 };
 
 Layout BuildLayout(int portrait_width, int portrait_height, const SettingsPageState& state)
@@ -75,6 +76,12 @@ Layout BuildLayout(int portrait_width, int portrait_height, const SettingsPageSt
         ButtonBounds(page_x, format_sd_button.bottom() + kButtonStackGap,
                      state.manual_onboarding_button, manual_button_style);
 
+    ButtonStyle volume_button_style = {};
+    volume_button_style.width = page_width;
+    const UiRect volume_button =
+        ButtonBounds(page_x, manual_onboarding_button.bottom() + kButtonStackGap,
+                     state.volume_button, volume_button_style);
+
     return {
         .wifi_toggle = wifi_toggle,
         .access_point_toggle = access_point_toggle,
@@ -82,6 +89,7 @@ Layout BuildLayout(int portrait_width, int portrait_height, const SettingsPageSt
         .enable_otg_button = enable_otg_button,
         .format_sd_button = format_sd_button,
         .manual_onboarding_button = manual_onboarding_button,
+        .volume_button = volume_button,
     };
 }
 
@@ -104,6 +112,8 @@ UiRect SettingsPageItemBounds(int portrait_width,
             return layout.format_sd_button;
         case SettingsPageItemId::kManualOnboardingButton:
             return layout.manual_onboarding_button;
+        case SettingsPageItemId::kVolumeButton:
+            return layout.volume_button;
         case SettingsPageItemId::kNone:
         default:
             return {};
@@ -135,6 +145,7 @@ bool HitTestSettingsPageItem(int portrait_width,
         SettingsPageItemId::kEnableOtgButton,
         SettingsPageItemId::kFormatSdButton,
         SettingsPageItemId::kManualOnboardingButton,
+        SettingsPageItemId::kVolumeButton,
     };
     for (SettingsPageItemId candidate : kItems) {
         const UiRect bounds =
@@ -290,6 +301,19 @@ void DrawSettingsPage(uint8_t* framebuffer,
                layout.manual_onboarding_button.y,
                state.manual_onboarding_button,
                manual_button_style);
+
+    // Volume cycles Off / Low / Medium / High on each press; outlined like Manual.
+    ButtonStyle volume_button_style = {};
+    volume_button_style.width = layout.volume_button.width;
+    DrawButton(framebuffer,
+               raw_width,
+               raw_height,
+               portrait_width,
+               portrait_height,
+               layout.volume_button.x,
+               layout.volume_button.y,
+               state.volume_button,
+               volume_button_style);
 
     DrawGlobalFooter(framebuffer,
                      raw_width,

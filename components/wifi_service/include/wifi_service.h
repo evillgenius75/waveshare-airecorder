@@ -32,6 +32,7 @@ struct ScannedNetwork {
     std::string ssid;
     int rssi = 0;
     wifi_auth_mode_t auth_mode = WIFI_AUTH_OPEN;
+    bool saved = false;  // a saved network: selecting it connects without a password
 
     bool IsOpen() const { return auth_mode == WIFI_AUTH_OPEN; }
 };
@@ -83,6 +84,14 @@ bool ConnectToNetwork(const std::string& ssid, const std::string& password,
 bool DisconnectFromNetwork(bool clear_saved_credentials = true);
 bool StartNetworkScan();
 bool ClearSavedCredentials();
+
+// Saved networks (up to five, most recently used first). Every network that connects
+// successfully is saved; the device auto-joins them at boot, after sleep, and in background
+// retries. ForgetNetwork removes one.
+std::vector<std::string> GetSavedNetworkSsids();
+bool IsNetworkSaved(const std::string& ssid);
+bool ConnectToSavedNetwork(const std::string& ssid);
+bool ForgetNetwork(const std::string& ssid);
 void RecoverAfterLightSleep();
 
 UiState GetUiState();

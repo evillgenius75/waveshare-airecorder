@@ -56,6 +56,14 @@ ActivateResult HandlePrimaryActivate(const SettingsPageCoordinator& coordinator)
             .play_activate_cue = true,
         };
     }
+    if (coordinator.IsRoleFocused(page_navigation::NavigationItemRole::kSettingsVolumeButton)) {
+        // The cycle callback plays its own preview at the new level.
+        return {
+            .intent = ActivateIntent::kCycleVolume,
+            .handled = true,
+            .play_activate_cue = false,
+        };
+    }
 
     return {};
 }
@@ -111,6 +119,11 @@ void ApplyPrimaryActivateResult(const ActivateResult& result,
         case ActivateIntent::kShowOnboarding:
             if (callbacks.show_onboarding) {
                 callbacks.show_onboarding();
+            }
+            return;
+        case ActivateIntent::kCycleVolume:
+            if (callbacks.cycle_volume) {
+                callbacks.cycle_volume();
             }
             return;
         case ActivateIntent::kNone:

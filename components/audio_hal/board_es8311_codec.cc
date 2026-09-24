@@ -118,7 +118,8 @@ void Es8311Codec::UpdatePaState() {
     if (pa_pin_ == GPIO_NUM_NC) {
         return;
     }
-    int level = output_enabled_ ? 1 : 0;
+    // A muted output (volume set to Off) also switches the amplifier off to save power.
+    int level = (output_enabled_ && !output_muted_) ? 1 : 0;
     gpio_set_level(pa_pin_, pa_inverted_ ? !level : level);
 }
 
@@ -230,7 +231,11 @@ void Es8311Codec::SetOutputVolume(int volume) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     AudioCodec::SetOutputVolume(volume);
     if (dev_ != nullptr) {
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, output_volume_));
+        // A user volume change must not be able to reboot the device on an I2C hiccup.
+        const esp_err_t err = esp_codec_dev_set_out_vol(dev_, output_volume_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Set output volume failed: %s", esp_err_to_name(err));
+        }
     }
 }
 
@@ -238,8 +243,12 @@ void Es8311Codec::SetOutputMuted(bool muted) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     AudioCodec::SetOutputMuted(muted);
     if (dev_ != nullptr) {
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_mute(dev_, output_muted_));
+        const esp_err_t err = esp_codec_dev_set_out_mute(dev_, output_muted_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Set output mute failed: %s", esp_err_to_name(err));
+        }
     }
+    UpdatePaState();
 }
 
 void Es8311Codec::EnableInput(bool enable) {

@@ -19,6 +19,7 @@ enum class SettingsPageItemId : uint8_t {
     kEnableOtgButton,
     kFormatSdButton,
     kManualOnboardingButton,
+    kVolumeButton,
 };
 
 struct SettingsPageState {
@@ -30,6 +31,7 @@ struct SettingsPageState {
     ButtonState enable_otg_button = {};
     ButtonState format_sd_button = {};
     ButtonState manual_onboarding_button = {};
+    ButtonState volume_button = {};
 };
 
 UiRect SettingsPageItemBounds(int portrait_width,

@@ -1,5 +1,6 @@
 #include "recording_archive_service.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -22,6 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "atomic_file.h"
 #include "storage_service.h"
 
 namespace recording_archive_service {
@@ -198,30 +200,12 @@ WavHeader BuildWavHeader(const recording_service::RecordedClip& clip)
     return header;
 }
 
+// Sidecars (.json metadata, .txt transcripts) are rewritten on every edit, so they go through
+// atomic_file: a power cut mid-write can no longer truncate one and drop the recording from
+// every list.
 bool WriteFileBytes(const std::string& path, const void* data, size_t size)
 {
-    errno = 0;
-    FILE* file = std::fopen(path.c_str(), "wb");
-    if (file == nullptr) {
-        ESP_LOGW(kTag,
-                 "Open file for write failed: %s errno=%d (%s)",
-                 path.c_str(),
-                 errno,
-                 std::strerror(errno));
-        return false;
-    }
-
-    const bool ok = size == 0 || std::fwrite(data, 1, size, file) == size;
-    const int write_errno = errno;
-    std::fclose(file);
-    if (!ok) {
-        ESP_LOGW(kTag,
-                 "Write file failed: %s errno=%d (%s)",
-                 path.c_str(),
-                 write_errno,
-                 std::strerror(write_errno));
-    }
-    return ok;
+    return atomic_file::Write(path, data, size);
 }
 
 bool WriteClipWav(const std::string& path, const recording_service::RecordedClip& clip)
@@ -592,6 +576,15 @@ void NotifyHandler()
 // mistaken for an emptied archive.
 esp_err_t ScanDirectoryInto(const std::string& directory, Snapshot* snapshot)
 {
+    // Finish any sidecar write a power cut interrupted, once per directory per boot, before
+    // the first count. Torn writes can only come from a previous power cycle.
+    static std::vector<std::string> s_recovered_directories;
+    if (std::find(s_recovered_directories.begin(), s_recovered_directories.end(), directory) ==
+        s_recovered_directories.end()) {
+        atomic_file::RecoverDirectory(directory);
+        s_recovered_directories.push_back(directory);
+    }
+
     errno = 0;
     DIR* dir = opendir(directory.c_str());
     if (dir == nullptr) {

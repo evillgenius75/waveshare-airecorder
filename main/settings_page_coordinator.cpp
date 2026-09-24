@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <string>
 
+#include "volume_service.h"
+
 namespace {
 
 std::string FormatStorageBytes(uint64_t bytes)
@@ -125,6 +127,12 @@ epaper_ui::SettingsPageState SettingsPageCoordinator::BuildState(
         .label_text = "Manual",
         .selected = IsRoleFocused(
             page_navigation::NavigationItemRole::kSettingsManualOnboardingButton),
+    };
+    volume_label_ = std::string("Volume: ") +
+                    volume_service::LevelLabel(volume_service::GetLevel());
+    state.volume_button = {
+        .label_text = volume_label_,
+        .selected = IsRoleFocused(page_navigation::NavigationItemRole::kSettingsVolumeButton),
     };
     return state;
 }
