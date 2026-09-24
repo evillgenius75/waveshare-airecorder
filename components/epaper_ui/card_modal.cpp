@@ -23,16 +23,10 @@ int ClampedActionCount(const CardModalState& state)
     return std::min(static_cast<int>(state.action_labels.size()), kMaxActions);
 }
 
-std::array<std::string_view, 4> WrapLines(std::string_view text, int max_width, int* line_count)
+// Word-wraps one paragraph (no '\n') into `lines`, continuing from *line_count.
+void WrapParagraph(std::string_view text, int max_width, std::array<std::string_view, 4>& lines,
+                   int* line_count)
 {
-    std::array<std::string_view, 4> lines = {};
-    if (line_count != nullptr) {
-        *line_count = 0;
-    }
-    if (line_count == nullptr || text.empty() || max_width <= 0) {
-        return lines;
-    }
-
     size_t line_start = 0;
     while (line_start < text.size() && *line_count < static_cast<int>(lines.size())) {
         while (line_start < text.size() && text[line_start] == ' ') {
@@ -85,7 +79,29 @@ std::array<std::string_view, 4> WrapLines(std::string_view text, int max_width, 
             ++line_start;
         }
     }
+}
 
+// Word-wraps `text` into at most four lines; '\n' forces a line break.
+std::array<std::string_view, 4> WrapLines(std::string_view text, int max_width, int* line_count)
+{
+    std::array<std::string_view, 4> lines = {};
+    if (line_count != nullptr) {
+        *line_count = 0;
+    }
+    if (line_count == nullptr || text.empty() || max_width <= 0) {
+        return lines;
+    }
+
+    size_t paragraph_start = 0;
+    while (paragraph_start <= text.size() && *line_count < static_cast<int>(lines.size())) {
+        size_t paragraph_end = text.find('\n', paragraph_start);
+        if (paragraph_end == std::string_view::npos) {
+            paragraph_end = text.size();
+        }
+        WrapParagraph(text.substr(paragraph_start, paragraph_end - paragraph_start), max_width,
+                      lines, line_count);
+        paragraph_start = paragraph_end + 1;
+    }
     return lines;
 }
 

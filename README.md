@@ -52,7 +52,7 @@ Only BOOT records, so no other button can start a recording by accident.
 
 You'll need a free Gemini API key from [Google AI Studio](https://aistudio.google.com/). The free tier works within Gemini's limits; a paid account removes them.
 
-**Today:** when Castor has no Wi-Fi saved, it creates its own setup Wi-Fi network. Join it from your phone or computer, and a setup page opens where you enter your Wi-Fi network, Gemini API key, and timezone.
+**Today:** when Castor has no Wi-Fi saved, it creates its own setup Wi-Fi network and shows its name and password on the screen. Join it from your phone or computer with that password, and a setup page opens where you enter your Wi-Fi network, Gemini API key, and timezone.
 
 **Coming soon, the Castor setup app:** scan the QR code on Castor's screen with an Android phone or Chrome on a computer, confirm the 6-digit code Castor shows, pick your Wi-Fi, and paste your API key. Your timezone is set from your phone automatically. iPhone support follows.
 
