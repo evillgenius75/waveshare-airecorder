@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS
+        "atomic_file.cpp"
         "storage_service.cpp"
         "usb_storage_backend.cpp"
     INCLUDE_DIRS "include"

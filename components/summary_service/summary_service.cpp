@@ -21,6 +21,7 @@
 #include "followup_task_config.h"
 #include "gemini_service.h"
 #include "recording_archive_service.h"
+#include "atomic_file.h"
 #include "storage_service.h"
 
 namespace summary_service {
@@ -520,13 +521,7 @@ bool ReadTextFile(const std::string& path, std::string* out)
 
 bool WriteTextFile(const std::string& path, const std::string& text)
 {
-    FILE* file = std::fopen(path.c_str(), "wb");
-    if (file == nullptr) {
-        return false;
-    }
-    const bool ok = text.empty() || std::fwrite(text.data(), 1, text.size(), file) == text.size();
-    std::fclose(file);
-    return ok;
+    return atomic_file::Write(path, text);
 }
 
 void ParseMetadataJson(const std::string& json_text, CacheMetadata* metadata)
