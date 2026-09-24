@@ -1361,6 +1361,22 @@ void HandleDispatchedButtonEvent(const button_service::ButtonEventInfo& event)
         }
     }
 
+    // Holding the rocker's middle key (FN) jumps Home from any page. Overlays (keyboards,
+    // modals, stickies) consumed their input above, so this only fires on a plain page, and
+    // FN had no long-press action before.
+    if (event.button == button_service::ButtonId::kFunction &&
+        event.event == button_service::ButtonEvent::kLongPressStart) {
+        const display_service::ScreenId screen = display_service::GetCurrentScreen();
+        if (screen != display_service::ScreenId::kHome &&
+            screen != display_service::ScreenId::kLockScreen &&
+            screen != display_service::ScreenId::kOnboarding) {
+            PlayInteractionFeedback(
+                HandleFooterActivate(footer_runtime::FooterFocusItem::kHome, nullptr));
+            FlushOverlayFeedback();
+            return;
+        }
+    }
+
     const page_input_runtime::ButtonResult page_button_result =
         page_input_runtime::HandleButtonEventForCurrentScreen(event);
     if (page_button_result.handled) {

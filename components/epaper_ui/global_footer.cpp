@@ -43,12 +43,12 @@ std::array<const FooterButtonState*, 6> VisibleButtons(const GlobalFooterState& 
 {
     std::array<const FooterButtonState*, 6> buttons = {};
     std::array<VisibleFooterButton, 6> mapped = {{
+        {.item = GlobalFooterItemId::kHome, .state = &state.home},
         {.item = GlobalFooterItemId::kSettings, .state = &state.settings},
         {.item = GlobalFooterItemId::kWifi, .state = &state.wifi},
         {.item = GlobalFooterItemId::kTime, .state = &state.time},
         {.item = GlobalFooterItemId::kFolder, .state = &state.folder},
         {.item = GlobalFooterItemId::kSticky, .state = &state.sticky},
-        {.item = GlobalFooterItemId::kHome, .state = &state.home},
     }};
     int count = 0;
     for (const VisibleFooterButton& button : mapped) {
@@ -70,12 +70,12 @@ std::array<VisibleFooterButton, 6> VisibleFooterButtons(const GlobalFooterState&
     std::array<VisibleFooterButton, 6> buttons = {};
     int count = 0;
     const VisibleFooterButton candidates[] = {
+        {.item = GlobalFooterItemId::kHome, .state = &state.home},
         {.item = GlobalFooterItemId::kSettings, .state = &state.settings},
         {.item = GlobalFooterItemId::kWifi, .state = &state.wifi},
         {.item = GlobalFooterItemId::kTime, .state = &state.time},
         {.item = GlobalFooterItemId::kFolder, .state = &state.folder},
         {.item = GlobalFooterItemId::kSticky, .state = &state.sticky},
-        {.item = GlobalFooterItemId::kHome, .state = &state.home},
     };
 
     for (const VisibleFooterButton& button : candidates) {
