@@ -14,6 +14,7 @@
 #include "display_service.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "feedback_service.h"
@@ -732,16 +733,56 @@ bool HandleDashboardMenuItem(int menu_index, void*)
     return false;
 }
 
+// A freshly updated image must prove itself before it is marked valid. Marking it at the
+// start of boot (as before) defeated rollback: an image that crashed a few seconds in was
+// already "valid", so the bootloader kept booting it. Instead the image is confirmed only
+// after it has run this long without a reset; a crash or watchdog reset before then leaves it
+// pending, and the bootloader rolls back to the previous image
+// (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE).
+constexpr uint64_t kOtaHealthyUptimeUs = 60ULL * 1000 * 1000;
+esp_timer_handle_t s_ota_confirm_timer = nullptr;
+
+void OnOtaHealthyUptime(void*)
+{
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(kTag, "Firmware image confirmed after healthy uptime");
+    } else {
+        ESP_LOGW(kTag, "Confirming firmware image failed: %s", esp_err_to_name(err));
+    }
+}
+
 void ConfirmPendingOtaImage()
 {
     const esp_partition_t* running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state = ESP_OTA_IMG_UNDEFINED;
 
-    if (running != nullptr &&
-        esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
-        ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-        ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
+    if (running == nullptr || esp_ota_get_state_partition(running, &ota_state) != ESP_OK ||
+        ota_state != ESP_OTA_IMG_PENDING_VERIFY) {
+        return;
     }
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = OnOtaHealthyUptime,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "ota_confirm",
+        .skip_unhandled_events = false,
+    };
+    esp_err_t err = esp_timer_create(&timer_args, &s_ota_confirm_timer);
+    if (err == ESP_OK) {
+        err = esp_timer_start_once(s_ota_confirm_timer, kOtaHealthyUptimeUs);
+    }
+    if (err != ESP_OK) {
+        // Without the timer the image could never be confirmed and would roll back on the
+        // next reset, so confirm now rather than lose a working update.
+        ESP_LOGW(kTag, "OTA confirm timer failed (%s); confirming image now",
+                 esp_err_to_name(err));
+        OnOtaHealthyUptime(nullptr);
+        return;
+    }
+    ESP_LOGI(kTag, "New firmware image pending verification; confirming after %llu s",
+             static_cast<unsigned long long>(kOtaHealthyUptimeUs / 1000000ULL));
 }
 
 const char* ButtonIdName(button_service::ButtonId button)
