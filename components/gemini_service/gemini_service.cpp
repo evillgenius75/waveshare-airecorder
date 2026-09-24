@@ -558,6 +558,9 @@ config_api::JsonPtr BuildSnapshotJson(const Snapshot& snapshot)
     cJSON_AddStringToObject(settings, "api_key_last4",
                             snapshot.settings.api_key_last4.c_str());
     cJSON_AddStringToObject(settings, "model_name", snapshot.settings.model_name.c_str());
+    // The names the portal page reads (webserver/src/portal/providerKeys.ts).
+    cJSON_AddBoolToObject(settings, "has_key", snapshot.settings.configured);
+    cJSON_AddStringToObject(settings, "last4", snapshot.settings.api_key_last4.c_str());
 
     cJSON* runtime = cJSON_AddObjectToObject(root, "runtime");
     cJSON_AddBoolToObject(runtime, "initialized", snapshot.runtime.initialized);
