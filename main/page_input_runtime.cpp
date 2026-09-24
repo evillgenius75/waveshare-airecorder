@@ -361,6 +361,10 @@ ButtonResult ApplyWifiActivateResult(const wifi_page_interactions::ActivateResul
             if (ssid.empty()) {
                 return;
             }
+            // Saved networks connect with their stored password unless a new one was typed.
+            if (password.empty() && wifi_service::ConnectToSavedNetwork(ssid)) {
+                return;
+            }
             (void)wifi_service::ConnectToNetwork(ssid, password, true);
     };
     wifi_page_interactions::ApplyPrimaryActivateResult(activation, callbacks);

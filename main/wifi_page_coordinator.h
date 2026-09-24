@@ -48,6 +48,7 @@ private:
         std::string ssid = {};
         bool current_network = false;
         bool private_network = false;
+        bool saved = false;  // connects without a password
         epaper_ui::NetworkSignalStrength signal_strength =
             epaper_ui::NetworkSignalStrength::kStrong;
     };
