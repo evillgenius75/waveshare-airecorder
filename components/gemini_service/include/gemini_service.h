@@ -5,7 +5,6 @@
 #include <string>
 
 #include "esp_err.h"
-#include "esp_http_server.h"
 
 namespace recording_service {
 class RecordedClip;
@@ -118,7 +117,6 @@ TokenCountResult CountTokens(const std::string& prompt);
 TranscriptionResult Transcribe(const recording_service::RecordedClip& clip);
 bool BeginAuthentication();
 void SetNetworkState(bool connected, bool access_point_mode);
-void RegisterPortalRoutes(httpd_handle_t server);
 
 const char* ApiKeySourceName(ApiKeySource source);
 

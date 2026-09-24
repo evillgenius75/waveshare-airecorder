@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "esp_err.h"
-#include "esp_http_server.h"
 
 namespace timezone_service {
 
@@ -80,7 +79,6 @@ void SetNetworkConnected(bool connected);
 Result ApplySettingsPatch(const SettingsPatch& patch);
 bool SyncNow(const char* ntp_server = nullptr, uint32_t timeout_ms = 2000);
 bool IsSyncInProgress();
-void RegisterPortalRoutes(httpd_handle_t server);
 
 const char* TimeSourceName(TimeSource source);
 

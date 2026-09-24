@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "cJSON.h"
+#include "config_api.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -35,10 +36,6 @@ constexpr const char* kStorageNamespace = "gemini";
 constexpr const char* kStorageApiKey = "api_key";
 constexpr const char* kDefaultModelName = "models/gemini-3.6-flash";
 constexpr const char* kGeminiApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/";
-constexpr const char* kPortalApiSettingsGeminiUri = "/api/settings/gemini";
-constexpr const char* kPortalApiSettingsGeminiResetUri = "/api/settings/gemini/reset";
-constexpr const char* kPortalApiRuntimeGeminiUri = "/api/runtime/gemini";
-constexpr size_t kMaxPortalPayloadLen = 512;
 constexpr int kAuthTimeoutMs = 15000;
 constexpr int kGenerateTimeoutMs = 60000;  // text generation can be slow for large prompts
 constexpr uint32_t kAuthTaskStackWords = 32768;
@@ -546,73 +543,10 @@ void MaybeBeginAuthentication()
     }
 }
 
-std::string ReadRequestBody(httpd_req_t* request)
+config_api::JsonPtr BuildSnapshotJson(const Snapshot& snapshot)
 {
-    if (request == nullptr || request->content_len <= 0) {
-        return {};
-    }
-
-    std::string body(static_cast<size_t>(request->content_len), '\0');
-    size_t offset = 0;
-    while (offset < body.size()) {
-        const int received = httpd_req_recv(request, body.data() + offset, body.size() - offset);
-        if (received <= 0) {
-            return {};
-        }
-        offset += static_cast<size_t>(received);
-    }
-    return body;
-}
-
-std::string JsonString(cJSON* root)
-{
-    if (root == nullptr) {
-        return "{}";
-    }
-
-    char* raw = cJSON_PrintUnformatted(root);
-    if (raw == nullptr) {
-        return "{}";
-    }
-    std::string json(raw);
-    cJSON_free(raw);
-    return json;
-}
-
-esp_err_t SendJsonResponse(httpd_req_t* request, int status_code, cJSON* root)
-{
-    if (request == nullptr) {
-        if (root != nullptr) {
-            cJSON_Delete(root);
-        }
-        return ESP_FAIL;
-    }
-
-    const std::string payload = JsonString(root);
-    if (root != nullptr) {
-        cJSON_Delete(root);
-    }
-
-    switch (status_code) {
-        case 200:
-            httpd_resp_set_status(request, HTTPD_200);
-            break;
-        case 400:
-            httpd_resp_set_status(request, HTTPD_400);
-            break;
-        case 500:
-        default:
-            httpd_resp_set_status(request, HTTPD_500);
-            break;
-    }
-    httpd_resp_set_type(request, "application/json; charset=utf-8");
-    return httpd_resp_send(request, payload.c_str(), payload.size());
-}
-
-void AppendSnapshot(cJSON* root, const Snapshot& snapshot, const char* message)
-{
-    cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddStringToObject(root, "message", message != nullptr ? message : "");
+    config_api::JsonPtr json(cJSON_CreateObject());
+    cJSON* root = json.get();
 
     cJSON* settings = cJSON_AddObjectToObject(root, "settings");
     cJSON_AddBoolToObject(settings, "configured", snapshot.settings.configured);
@@ -624,6 +558,9 @@ void AppendSnapshot(cJSON* root, const Snapshot& snapshot, const char* message)
     cJSON_AddStringToObject(settings, "api_key_last4",
                             snapshot.settings.api_key_last4.c_str());
     cJSON_AddStringToObject(settings, "model_name", snapshot.settings.model_name.c_str());
+    // The names the portal page reads (webserver/src/portal/providerKeys.ts).
+    cJSON_AddBoolToObject(settings, "has_key", snapshot.settings.configured);
+    cJSON_AddStringToObject(settings, "last4", snapshot.settings.api_key_last4.c_str());
 
     cJSON* runtime = cJSON_AddObjectToObject(root, "runtime");
     cJSON_AddBoolToObject(runtime, "initialized", snapshot.runtime.initialized);
@@ -646,121 +583,54 @@ void AppendSnapshot(cJSON* root, const Snapshot& snapshot, const char* message)
                             snapshot.runtime.last_error_code.c_str());
     cJSON_AddStringToObject(runtime, "last_error_message",
                             snapshot.runtime.last_error_message.c_str());
+    return json;
 }
 
-bool ParsePatchBody(const std::string& body, SettingsPatch* patch, std::string* error)
+// --- Config commands (served over the portal's HTTP routes by config_api) ----------------------
+
+config_api::Response ResultToError(const Result& result)
 {
-    if (patch == nullptr) {
-        return false;
-    }
-
-    cJSON* root = cJSON_ParseWithLength(body.c_str(), body.size());
-    if (root == nullptr) {
-        if (error != nullptr) {
-            *error = "Invalid JSON body";
-        }
-        return false;
-    }
-
-    cJSON* api_key = cJSON_GetObjectItemCaseSensitive(root, "api_key");
-    if (cJSON_IsString(api_key) && api_key->valuestring != nullptr) {
-        patch->has_api_key = true;
-        patch->api_key = api_key->valuestring;
-    } else if (api_key != nullptr && !cJSON_IsNull(api_key)) {
-        if (error != nullptr) {
-            *error = "Invalid api_key";
-        }
-        cJSON_Delete(root);
-        return false;
-    }
-
-    cJSON_Delete(root);
-    return true;
+    return config_api::Error(result.status_code, result.error_code, result.message, result.field);
 }
 
-esp_err_t RegisterPortalRoute(httpd_handle_t server, const httpd_uri_t* handler)
+config_api::Response CommandGet(const cJSON*)
 {
-    if (server == nullptr || handler == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const esp_err_t err = httpd_register_uri_handler(server, handler);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "Failed to register Gemini portal route %s [%d]: %s",
-                 handler->uri != nullptr ? handler->uri : "<null>",
-                 static_cast<int>(handler->method),
-                 esp_err_to_name(err));
-    }
-    return err;
+    return config_api::Ok("Gemini settings loaded", BuildSnapshotJson(GetSnapshot()));
 }
 
-esp_err_t HandlePortalSettingsGet(httpd_req_t* request)
+// args: {"api_key": "..."}
+config_api::Response CommandSetKey(const cJSON* args)
 {
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), "Gemini settings loaded");
-    return SendJsonResponse(request, 200, root);
-}
-
-esp_err_t HandlePortalSettingsPatch(httpd_req_t* request)
-{
-    if (request == nullptr ||
-        request->content_len <= 0 ||
-        request->content_len > static_cast<int>(kMaxPortalPayloadLen)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "Invalid Gemini settings payload");
-        return SendJsonResponse(request, 400, root);
-    }
-
-    const std::string body = ReadRequestBody(request);
     SettingsPatch patch = {};
-    std::string parse_error;
-    if (body.empty() || !ParsePatchBody(body, &patch, &parse_error)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message",
-                                parse_error.empty() ? "Invalid Gemini settings payload"
-                                                    : parse_error.c_str());
-        return SendJsonResponse(request, 400, root);
+    const cJSON* api_key = cJSON_GetObjectItemCaseSensitive(args, "api_key");
+    if (cJSON_IsString(api_key) && api_key->valuestring != nullptr) {
+        patch.has_api_key = true;
+        patch.api_key = api_key->valuestring;
+    } else if (api_key != nullptr && !cJSON_IsNull(api_key)) {
+        return config_api::Error(400, "invalid_api_key", "Invalid api_key", "api_key");
     }
 
     const Result result = ApplySettingsPatch(patch);
     if (!result.success) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", result.message.c_str());
-        cJSON_AddStringToObject(root, "error_code", result.error_code.c_str());
-        cJSON_AddStringToObject(root, "field", result.field.c_str());
-        return SendJsonResponse(request, result.status_code, root);
+        return ResultToError(result);
     }
-
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), "Gemini API key stored");
-    return SendJsonResponse(request, 200, root);
+    return config_api::Ok("Gemini API key stored", BuildSnapshotJson(GetSnapshot()));
 }
 
-esp_err_t HandlePortalSettingsReset(httpd_req_t* request)
+config_api::Response CommandClearKey(const cJSON*)
 {
     const Result result = ClearStoredApiKey();
     if (!result.success) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", result.message.c_str());
-        cJSON_AddStringToObject(root, "error_code", result.error_code.c_str());
-        cJSON_AddStringToObject(root, "field", result.field.c_str());
-        return SendJsonResponse(request, result.status_code, root);
+        return ResultToError(result);
     }
-
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), "Gemini API key cleared");
-    return SendJsonResponse(request, 200, root);
+    return config_api::Ok("Gemini API key cleared", BuildSnapshotJson(GetSnapshot()));
 }
 
-esp_err_t HandlePortalRuntimeGet(httpd_req_t* request)
+void RegisterConfigCommands()
 {
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), "Gemini runtime loaded");
-    return SendJsonResponse(request, 200, root);
+    config_api::RegisterCommand("gemini_get", CommandGet);
+    config_api::RegisterCommand("gemini_set_key", CommandSetKey);
+    config_api::RegisterCommand("gemini_clear_key", CommandClearKey);
 }
 
 // Synchronous JSON POST to a Gemini endpoint (generateContent / countTokens).
@@ -1126,6 +996,7 @@ uint32_t ResolveUploadChunkCount(const recording_service::RecordedClip& clip)
 
 esp_err_t Init()
 {
+    RegisterConfigCommands();
     Snapshot snapshot = {};
     {
         std::lock_guard<std::mutex> lock(s_mutex);
@@ -1620,44 +1491,6 @@ void SetNetworkState(bool connected, bool access_point_mode)
     MaybeBeginAuthentication();
 }
 
-void RegisterPortalRoutes(httpd_handle_t server)
-{
-    if (server == nullptr) {
-        return;
-    }
-
-    httpd_uri_t settings_get = {
-        .uri = kPortalApiSettingsGeminiUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalSettingsGet,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t settings_patch = {
-        .uri = kPortalApiSettingsGeminiUri,
-        .method = HTTP_PATCH,
-        .handler = HandlePortalSettingsPatch,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t settings_reset = {
-        .uri = kPortalApiSettingsGeminiResetUri,
-        .method = HTTP_POST,
-        .handler = HandlePortalSettingsReset,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t runtime_get = {
-        .uri = kPortalApiRuntimeGeminiUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalRuntimeGet,
-        .user_ctx = nullptr,
-    };
-
-    if (RegisterPortalRoute(server, &settings_get) != ESP_OK ||
-        RegisterPortalRoute(server, &settings_patch) != ESP_OK ||
-        RegisterPortalRoute(server, &settings_reset) != ESP_OK ||
-        RegisterPortalRoute(server, &runtime_get) != ESP_OK) {
-        ESP_LOGW(kTag, "Gemini portal routes are incomplete");
-    }
-}
 
 const char* ApiKeySourceName(ApiKeySource source)
 {

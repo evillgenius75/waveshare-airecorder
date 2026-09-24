@@ -46,6 +46,9 @@ build-*/
 managed_components/
 dependencies.lock
 
+# Local agent handoff notes
+handoff/
+
 # ESP-IDF generated files
 # sdkconfig is regenerated from sdkconfig.defaults on every build, and menuconfig writes
 # real values into it -- including secrets like CONFIG_FOLLOWUP_GEMINI_API_KEY. Keep it

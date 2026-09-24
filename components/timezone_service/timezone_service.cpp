@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "cJSON.h"
+#include "config_api.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "esp_timer.h"
@@ -39,12 +40,8 @@ constexpr const char* kNtpEpochKey = "ntp_epoch";
 constexpr const char* kDefaultNtpServer = "pool.ntp.org";
 constexpr const char* kChinaNtpServer = "cn.pool.ntp.org";
 constexpr time_t kMinValidEpoch = 1600000000;
-constexpr size_t kMaxPortalPayloadLen = 512;
 constexpr uint32_t kSyncTaskStackWords = 6144;
 constexpr UBaseType_t kSyncQueueDepth = 4;
-constexpr const char* kPortalApiSettingsTimeUri = "/api/settings/time";
-constexpr const char* kPortalApiRuntimeTimeUri = "/api/runtime/time";
-constexpr const char* kPortalApiTimezoneListUri = "/api/timezone/list";
 
 struct TimezoneCatalogEntry {
     const char* name;
@@ -574,67 +571,6 @@ Result MakeValidationError(const char* field, const char* error_code, std::strin
     return result;
 }
 
-std::string ReadRequestBody(httpd_req_t* request)
-{
-    if (request == nullptr || request->content_len <= 0) {
-        return {};
-    }
-
-    std::string body(static_cast<size_t>(request->content_len), '\0');
-    size_t offset = 0;
-    while (offset < body.size()) {
-        const int received = httpd_req_recv(request, body.data() + offset, body.size() - offset);
-        if (received <= 0) {
-            return {};
-        }
-        offset += static_cast<size_t>(received);
-    }
-    return body;
-}
-
-std::string JsonString(cJSON* root)
-{
-    if (root == nullptr) {
-        return "{}";
-    }
-    char* raw = cJSON_PrintUnformatted(root);
-    if (raw == nullptr) {
-        return "{}";
-    }
-    std::string json(raw);
-    cJSON_free(raw);
-    return json;
-}
-
-esp_err_t SendJsonResponse(httpd_req_t* request, int status_code, cJSON* root)
-{
-    if (request == nullptr) {
-        if (root != nullptr) {
-            cJSON_Delete(root);
-        }
-        return ESP_FAIL;
-    }
-
-    const std::string payload = JsonString(root);
-    if (root != nullptr) {
-        cJSON_Delete(root);
-    }
-
-    switch (status_code) {
-        case 200:
-            httpd_resp_set_status(request, HTTPD_200);
-            break;
-        case 400:
-            httpd_resp_set_status(request, HTTPD_400);
-            break;
-        default:
-            httpd_resp_set_status(request, HTTPD_500);
-            break;
-    }
-    httpd_resp_set_type(request, "application/json; charset=utf-8");
-    return httpd_resp_send(request, payload.c_str(), payload.size());
-}
-
 void AppendRuntime(cJSON* runtime, const RuntimeSnapshot& snapshot)
 {
     cJSON_AddBoolToObject(runtime, "clock_enabled", snapshot.clock_enabled);
@@ -647,10 +583,10 @@ void AppendRuntime(cJSON* runtime, const RuntimeSnapshot& snapshot)
     cJSON_AddStringToObject(runtime, "current_time", snapshot.current_time.c_str());
 }
 
-void AppendSnapshot(cJSON* root, const Snapshot& snapshot, const char* message)
+config_api::JsonPtr BuildSnapshotJson(const Snapshot& snapshot)
 {
-    cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddStringToObject(root, "message", message != nullptr ? message : "");
+    config_api::JsonPtr json(cJSON_CreateObject());
+    cJSON* root = json.get();
 
     cJSON* settings = cJSON_AddObjectToObject(root, "settings");
     cJSON_AddBoolToObject(settings, "enabled", snapshot.settings.enabled);
@@ -659,69 +595,52 @@ void AppendSnapshot(cJSON* root, const Snapshot& snapshot, const char* message)
 
     cJSON* runtime = cJSON_AddObjectToObject(root, "runtime");
     AppendRuntime(runtime, snapshot.runtime);
+    return json;
 }
 
-bool ParsePatchBody(const std::string& body, SettingsPatch* patch, std::string* error)
+// Fills `patch` from command args; on a type error sets `error`/`field` and returns false.
+bool ParsePatchArgs(const cJSON* args, SettingsPatch* patch, std::string* error,
+                    std::string* field)
 {
-    if (patch == nullptr) {
-        return false;
-    }
-
-    cJSON* root = cJSON_ParseWithLength(body.c_str(), body.size());
-    if (root == nullptr) {
-        if (error != nullptr) {
-            *error = "Invalid JSON body";
-        }
-        return false;
-    }
-
-    cJSON* enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    cJSON* enabled = cJSON_GetObjectItemCaseSensitive(args, "enabled");
     if (cJSON_IsBool(enabled)) {
         patch->has_enabled = true;
         patch->enabled = cJSON_IsTrue(enabled);
     } else if (enabled != nullptr && !cJSON_IsNull(enabled)) {
-        if (error != nullptr) {
-            *error = "Invalid enabled";
-        }
-        cJSON_Delete(root);
+        *error = "Invalid enabled";
+        *field = "enabled";
         return false;
     }
 
-    cJSON* timezone_name = cJSON_GetObjectItemCaseSensitive(root, "timezone_name");
+    cJSON* timezone_name = cJSON_GetObjectItemCaseSensitive(args, "timezone_name");
     if (cJSON_IsString(timezone_name) && timezone_name->valuestring != nullptr) {
         patch->has_timezone_name = true;
         patch->timezone_name = timezone_name->valuestring;
     } else if (timezone_name != nullptr && !cJSON_IsNull(timezone_name)) {
-        if (error != nullptr) {
-            *error = "Invalid timezone_name";
-        }
-        cJSON_Delete(root);
+        *error = "Invalid timezone_name";
+        *field = "timezone_name";
         return false;
     }
 
-    cJSON* location = cJSON_GetObjectItemCaseSensitive(root, "location");
+    cJSON* location = cJSON_GetObjectItemCaseSensitive(args, "location");
     if (cJSON_IsString(location) && location->valuestring != nullptr) {
         patch->has_location = true;
         patch->location = location->valuestring;
     } else if (location != nullptr && !cJSON_IsNull(location)) {
-        if (error != nullptr) {
-            *error = "Invalid location";
-        }
-        cJSON_Delete(root);
+        *error = "Invalid location";
+        *field = "location";
         return false;
     }
 
-    cJSON* manual_date = cJSON_GetObjectItemCaseSensitive(root, "manual_date");
-    cJSON* manual_time = cJSON_GetObjectItemCaseSensitive(root, "manual_time");
+    cJSON* manual_date = cJSON_GetObjectItemCaseSensitive(args, "manual_date");
+    cJSON* manual_time = cJSON_GetObjectItemCaseSensitive(args, "manual_time");
     const bool has_manual_date =
         cJSON_IsString(manual_date) && manual_date->valuestring != nullptr;
     const bool has_manual_time =
         cJSON_IsString(manual_time) && manual_time->valuestring != nullptr;
     if (has_manual_date != has_manual_time) {
-        if (error != nullptr) {
-            *error = "manual_date and manual_time must be provided together";
-        }
-        cJSON_Delete(root);
+        *error = "manual_date and manual_time must be provided together";
+        *field = has_manual_date ? "manual_time" : "manual_date";
         return false;
     }
     if (has_manual_date && has_manual_time) {
@@ -729,105 +648,68 @@ bool ParsePatchBody(const std::string& body, SettingsPatch* patch, std::string* 
         patch->manual_date = manual_date->valuestring;
         patch->manual_time = manual_time->valuestring;
     }
-
-    cJSON_Delete(root);
     return true;
 }
 
-esp_err_t RegisterPortalRoute(httpd_handle_t server, const httpd_uri_t* handler)
-{
-    if (server == nullptr || handler == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
+// --- Config commands (served over the portal's HTTP routes by config_api) ----------------------
 
-    const esp_err_t err = httpd_register_uri_handler(server, handler);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "Failed to register timezone portal route %s [%d]: %s",
-                 handler->uri != nullptr ? handler->uri : "<null>",
-                 static_cast<int>(handler->method),
-                 esp_err_to_name(err));
-    }
-    return err;
+config_api::Response CommandGet(const cJSON*)
+{
+    return config_api::Ok("Time settings loaded", BuildSnapshotJson(GetSnapshot()));
 }
 
-esp_err_t HandlePortalTimeSettings(httpd_req_t* request)
+// args: any of enabled, timezone_name, location, and manual_date + manual_time together.
+config_api::Response CommandSet(const cJSON* args)
 {
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), "Time settings loaded");
-    return SendJsonResponse(request, 200, root);
-}
-
-esp_err_t HandlePortalTimeSettingsPatch(httpd_req_t* request)
-{
-    if (request == nullptr ||
-        request->content_len <= 0 ||
-        request->content_len > static_cast<int>(kMaxPortalPayloadLen)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "Invalid time settings payload");
-        return SendJsonResponse(request, 400, root);
-    }
-
-    const std::string body = ReadRequestBody(request);
     SettingsPatch patch = {};
-    std::string parse_error;
-    if (body.empty() || !ParsePatchBody(body, &patch, &parse_error)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message",
-                                parse_error.empty() ? "Invalid time settings payload"
-                                                    : parse_error.c_str());
-        return SendJsonResponse(request, 400, root);
+    std::string error;
+    std::string field;
+    if (!ParsePatchArgs(args, &patch, &error, &field)) {
+        return config_api::Error(400, "invalid_args", error, field);
     }
 
     const Result result = ApplySettingsPatch(patch);
     if (!result.success) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", result.message.c_str());
-        if (!result.field.empty()) {
-            cJSON_AddStringToObject(root, "field", result.field.c_str());
-        }
-        if (!result.error_code.empty()) {
-            cJSON_AddStringToObject(root, "error_code", result.error_code.c_str());
-        }
-        return SendJsonResponse(request, result.status_code, root);
+        return config_api::Error(result.status_code, result.error_code, result.message,
+                                 result.field);
     }
-
-    cJSON* root = cJSON_CreateObject();
-    AppendSnapshot(root, GetSnapshot(), result.message.c_str());
-    return SendJsonResponse(request, 200, root);
+    return config_api::Ok(result.message, BuildSnapshotJson(GetSnapshot()));
 }
 
-esp_err_t HandlePortalTimeRuntime(httpd_req_t* request)
+config_api::Response CommandRuntime(const cJSON*)
 {
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddStringToObject(root, "message", "Time runtime loaded");
-    cJSON* runtime = cJSON_AddObjectToObject(root, "runtime");
+    config_api::JsonPtr data(cJSON_CreateObject());
+    cJSON* runtime = cJSON_AddObjectToObject(data.get(), "runtime");
     AppendRuntime(runtime, GetSnapshot().runtime);
-    return SendJsonResponse(request, 200, root);
+    return config_api::Ok("Time runtime loaded", std::move(data));
 }
 
-esp_err_t HandlePortalTimezoneList(httpd_req_t* request)
+config_api::Response CommandTimezoneList(const cJSON*)
 {
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddStringToObject(root, "message", "Timezone list loaded");
-    cJSON* timezones = cJSON_AddArrayToObject(root, "timezones");
+    config_api::JsonPtr data(cJSON_CreateObject());
+    cJSON* timezones = cJSON_AddArrayToObject(data.get(), "timezones");
     for (const TimezoneInfo& timezone : ListTimezones()) {
         cJSON* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "name", timezone.name.c_str());
         cJSON_AddStringToObject(item, "description", timezone.description.c_str());
         cJSON_AddItemToArray(timezones, item);
     }
-    return SendJsonResponse(request, 200, root);
+    return config_api::Ok("Timezone list loaded", std::move(data));
+}
+
+void RegisterConfigCommands()
+{
+    config_api::RegisterCommand("time_get", CommandGet);
+    config_api::RegisterCommand("time_set", CommandSet);
+    config_api::RegisterCommand("time_runtime", CommandRuntime);
+    config_api::RegisterCommand("timezone_list", CommandTimezoneList);
 }
 
 }  // namespace
 
 esp_err_t Init()
 {
+    RegisterConfigCommands();
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         if (s_initialized) {
@@ -1078,44 +960,6 @@ bool IsSyncInProgress()
     return s_sync_in_progress.load(std::memory_order_relaxed);
 }
 
-void RegisterPortalRoutes(httpd_handle_t server)
-{
-    if (server == nullptr) {
-        return;
-    }
-
-    httpd_uri_t settings_get = {
-        .uri = kPortalApiSettingsTimeUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalTimeSettings,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t settings_patch = {
-        .uri = kPortalApiSettingsTimeUri,
-        .method = HTTP_PATCH,
-        .handler = HandlePortalTimeSettingsPatch,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t runtime_get = {
-        .uri = kPortalApiRuntimeTimeUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalTimeRuntime,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t timezone_list = {
-        .uri = kPortalApiTimezoneListUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalTimezoneList,
-        .user_ctx = nullptr,
-    };
-
-    if (RegisterPortalRoute(server, &settings_get) != ESP_OK ||
-        RegisterPortalRoute(server, &settings_patch) != ESP_OK ||
-        RegisterPortalRoute(server, &runtime_get) != ESP_OK ||
-        RegisterPortalRoute(server, &timezone_list) != ESP_OK) {
-        ESP_LOGW(kTag, "Timezone portal routes are incomplete");
-    }
-}
 
 const char* TimeSourceName(TimeSource source)
 {

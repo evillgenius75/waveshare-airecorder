@@ -61,12 +61,17 @@ onboarding, and a set of feature pages plus overlays) built on:
 - A `storage_service` component that owns app-facing MicroSD mount, format, and
   debug status policy.
 - A `wifi_service` component that owns ESP-IDF Wi-Fi station/AP lifecycle,
-  saved credentials, scan state, and the backend HTTP routes for setup/status.
+  saved credentials, scan state, the setup portal's HTTP server, and the Wi-Fi
+  config commands.
 - A `timezone_service` component that owns timezone settings, SNTP sync,
-  system-time updates, PCF85063 RTC writeback, and backend HTTP routes for time
-  settings/runtime state.
+  system-time updates, PCF85063 RTC writeback, and the time config commands.
 - A `gemini_service` component that owns Gemini API key settings precedence,
-  backend HTTP routes, and Gemini authentication readiness state.
+  the Gemini config commands, and Gemini authentication readiness state.
+- A `config_api` component: the transport-agnostic command router for device
+  configuration. Services register named commands (`wifi_connect`,
+  `gemini_set_key`, `time_set`, ...) at `Init()`; transports dispatch to them.
+  It also holds the versioned JSON protocol (`HandleMessage`) and the setup
+  portal's HTTP adapter, which maps each REST route to one command.
 - A `recording_service` component that owns voice-input recording state,
   pre-roll buffering, PSRAM-backed clips, input-level tracking, and WAV export
   to MicroSD.
@@ -792,10 +797,11 @@ Wi-Fi and time services follow the same boundary:
 
 - `wifi_service` owns `esp_netif`, the default ESP event-loop registration,
   `esp_wifi` mode changes, station/AP configuration, NVS credential storage,
-  network scans, and the HTTP backend server used during AP setup.
+  network scans, and the HTTP server used during AP setup (portal page and
+  assets; the REST routes come from `config_api::http`).
 - `timezone_service` owns timezone catalog/aliases, persisted timezone settings,
   SNTP setup, system-time updates, PCF85063 RTC read/write through
-  `power_service`, and backend HTTP routes for time settings.
+  `power_service`, and the time config commands.
 - `app_shell` wires the two services together by forwarding Wi-Fi connectivity
   events into `timezone_service::SetNetworkConnected(...)`.
 
@@ -820,6 +826,11 @@ is enabled, `wifi_service` enters open AP setup mode and serves backend routes
 at the SoftAP URL, normally `http://192.168.4.1`. The current backend
 intentionally exposes JSON/form endpoints only; it does not embed the old
 portal UI and does not add DNS captive-portal redirection.
+
+The REST routes are thin adapters over `config_api` commands, defined in one
+table in `components/config_api/config_api_http.cpp`. Replies keep the portal's
+shape: `{"success": bool, "message": "...", ...}`, plus `error_code`/`field` on
+validation errors.
 
 Current Wi-Fi backend routes:
 
