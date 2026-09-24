@@ -8,6 +8,7 @@
 #include <string>
 
 #include "esp_log.h"
+#include "deferred_event.h"
 #include "followup_task_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -52,6 +53,7 @@ struct GuardrailResult {
 };
 
 std::mutex s_mutex;
+using EventScope = deferred_event::Scope<Event>;
 EventHandler s_event_handler = nullptr;
 void* s_event_context = nullptr;
 bool s_initialized = false;
@@ -228,18 +230,14 @@ void SyncRecordingStateLocked(const recording_service::UiState& state)
     s_snapshot.has_clip = state.has_clip;
 }
 
+// Queues the current snapshot for delivery once the active EventScope releases s_mutex.
+// Handlers never run under s_mutex (see deferred_event.h).
 void NotifyLocked()
 {
-    EventHandler handler = s_event_handler;
-    void* context = s_event_context;
-    if (handler == nullptr) {
+    if (s_event_handler == nullptr) {
         return;
     }
-
-    const Event event = {
-        .snapshot = s_snapshot,
-    };
-    handler(event, context);
+    EventScope::Post(s_event_handler, s_event_context, Event{.snapshot = s_snapshot});
 }
 
 // Playback blocks for the length of the clip, so it cannot run on the sound-cue callback
@@ -269,7 +267,7 @@ void PlaybackWorker(void* arg)
 // is what throws away a bad take.
 void AdvanceToTagSelection(const char* reason)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     if (s_snapshot.phase != Phase::kStopCue && s_snapshot.phase != Phase::kPlayingBack) {
         return;
     }
@@ -298,7 +296,7 @@ bool StartClipPlayback(const recording_service::RecordedClipPtr& clip)
     // selection the moment it finishes, and a very short clip would otherwise beat this
     // update -- leaving the phase stuck on kPlayingBack after the menu had already opened.
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kPlayingBack;
         s_snapshot.last_status_message = kPlayingBackStatus;
         NotifyLocked();
@@ -323,7 +321,7 @@ void HandleStopCueResult(uint32_t token, SoundCuePlaybackResult result)
 {
     recording_service::RecordedClipPtr clip = nullptr;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (token != s_cue_token || s_snapshot.phase != Phase::kStopCue) {
             return;
         }
@@ -343,7 +341,7 @@ void HandleStartCueResult(uint32_t token, SoundCuePlaybackResult)
 {
     bool finish_now = false;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         // The cue is cosmetic: capture is already running underneath it, so even a failed
         // cue just moves the UI on rather than aborting the take.
         if (token != s_cue_token || s_snapshot.phase != Phase::kStartCue) {
@@ -379,7 +377,7 @@ void MarkBlockedLocked(BlockedReason reason)
 
 esp_err_t Init()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     if (s_initialized) {
         return ESP_OK;
     }
@@ -393,14 +391,14 @@ esp_err_t Init()
 
 void SetEventHandler(EventHandler handler, void* context)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     s_event_handler = handler;
     s_event_context = context;
 }
 
 Snapshot GetSnapshot()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     return s_snapshot;
 }
 
@@ -424,7 +422,7 @@ bool BeginArchivedTranscription(const std::string& recording_id)
 
     recording_service::RecordedClipPtr clip = recording_archive_service::LoadClip(recording_id);
     if (!clip || clip->empty()) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kFailed;
         s_snapshot.request_in_flight = false;
         s_snapshot.last_status_message = "Couldn't load recording audio";
@@ -435,14 +433,14 @@ bool BeginArchivedTranscription(const std::string& recording_id)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.clip_saved = true;  // the recording already lives on SD
         s_snapshot.transcript_saved = false;
         s_pending_recording_id = recording_id;
     }
 
     if (transcription_service::BeginTranscription(clip)) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kTranscribing;
         s_snapshot.request_in_flight = true;
         s_snapshot.last_status_message = kTranscribingStatus;
@@ -454,7 +452,7 @@ bool BeginArchivedTranscription(const std::string& recording_id)
 
     // Couldn't start (e.g. Gemini not ready): surface the transcription error as a failure.
     const transcription_service::Snapshot ts = transcription_service::GetSnapshot();
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     s_snapshot.phase = Phase::kFailed;
     s_snapshot.request_in_flight = false;
     s_snapshot.last_status_message =
@@ -473,7 +471,7 @@ bool HandlePowerPressDown(const Context& context)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         // No new take while the previous one is still being cued, replayed, or resolved.
         if (s_snapshot.phase == Phase::kStartCue || s_snapshot.phase == Phase::kStopCue ||
             s_snapshot.phase == Phase::kPlayingBack ||
@@ -491,7 +489,7 @@ bool HandlePowerPressDown(const Context& context)
     }
 
     const esp_err_t err = recording_service::Arm();
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     if (err != ESP_OK) {
         s_snapshot.phase = Phase::kFailed;
         s_snapshot.allowed = false;
@@ -518,7 +516,7 @@ bool HandlePowerLongPressStart(const Context& context)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         const BlockedReason blocked_reason = EvaluateBlockedReason(context);
         if (blocked_reason != BlockedReason::kNone) {
             MarkBlockedLocked(blocked_reason);
@@ -535,7 +533,7 @@ bool HandlePowerLongPressStart(const Context& context)
     const esp_err_t err = recording_service::Start(recording_service::StartMode::kFresh);
     uint32_t cue_token = 0;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (err != ESP_OK) {
             s_snapshot.phase = Phase::kFailed;
             s_snapshot.last_status_message = "Recording failed to start";
@@ -568,13 +566,13 @@ bool HandlePowerPressUp(const Context&)
 
     Phase phase = Phase::kIdle;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         phase = s_snapshot.phase;
     }
 
     if (phase == Phase::kArmed) {
         (void)recording_service::Cancel();
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         ResetToIdleLocked();
         NotifyLocked();
         return true;
@@ -584,7 +582,7 @@ bool HandlePowerPressUp(const Context&)
     // cue owns the transition out of kStartCue. Defer the finish rather than dropping it,
     // otherwise a hold barely longer than the cue would record forever.
     if (phase == Phase::kStartCue) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_finish_pending_after_start_cue = true;
         return true;
     }
@@ -594,7 +592,7 @@ bool HandlePowerPressUp(const Context&)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kSaving;
         s_snapshot.last_status_message = "Preparing recording";
         NotifyLocked();
@@ -620,7 +618,7 @@ bool SubmitTagSelection(int selected_index)
              kTagOptions[static_cast<size_t>(selected_index)].label_text.data());
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (s_snapshot.phase != Phase::kAwaitingTagSelection) {
             return false;
         }
@@ -628,7 +626,7 @@ bool SubmitTagSelection(int selected_index)
 
     if (kTagOptions[static_cast<size_t>(selected_index)].is_discard) {
         recording_service::DiscardClip();
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kComplete;
         s_snapshot.has_clip = false;
         s_snapshot.clip_saved = false;
@@ -642,7 +640,7 @@ bool SubmitTagSelection(int selected_index)
 
     recording_service::RecordedClipPtr clip = recording_service::GetRecordedClip();
     if (!clip || clip->empty()) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kFailed;
         s_snapshot.last_status_message = "Save failed";
         s_snapshot.last_error_code = "recording_missing";
@@ -652,7 +650,7 @@ bool SubmitTagSelection(int selected_index)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kSaving;
         s_snapshot.last_status_message = kSavingStatus;
         s_snapshot.last_error_code.clear();
@@ -687,7 +685,7 @@ bool SubmitTagSelection(int selected_index)
              should_transcribe ? 1 : 0);
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.clip_saved = save_result.clip_saved;
         s_snapshot.transcript_saved = false;
         s_snapshot.last_saved_recording_id = save_result.recording_id;
@@ -698,7 +696,7 @@ bool SubmitTagSelection(int selected_index)
 
     if (should_transcribe && transcription_service::BeginTranscription(clip)) {
         recording_service::DiscardClip();
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.phase = Phase::kTranscribing;
         s_snapshot.request_in_flight = true;
         s_snapshot.last_status_message = kTranscribingStatus;
@@ -716,7 +714,7 @@ bool SubmitTagSelection(int selected_index)
 
     recording_service::DiscardClip();
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.request_in_flight = false;
         s_snapshot.phase = save_result.clip_saved ? Phase::kComplete : Phase::kFailed;
         s_snapshot.last_status_message = save_result.clip_saved
@@ -760,7 +758,7 @@ void HandleRecordingEvent(const recording_service::Event& event)
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         SyncRecordingStateLocked(event.ui_state);
         s_snapshot.request_in_flight = transcription_service::GetSnapshot().request_in_flight;
 
@@ -818,7 +816,7 @@ void HandleTranscriptionEvent(const transcription_service::Event& event)
     std::string pending_recording_id;
     std::string transcript_text;
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.request_in_flight = event.snapshot.request_in_flight;
         if (s_snapshot.phase == Phase::kTranscribing && !event.snapshot.request_in_flight &&
             !event.snapshot.last_transcript.empty() && !s_pending_recording_id.empty()) {
@@ -843,7 +841,7 @@ void HandleTranscriptionEvent(const transcription_service::Event& event)
                  save_result.transcript_path.empty() ? "<none>" : save_result.transcript_path.c_str(),
                  save_result.metadata_path.empty() ? "<none>" : save_result.metadata_path.c_str(),
                  save_result.error_code.empty() ? "<none>" : save_result.error_code.c_str());
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_snapshot.transcript_saved = save_result.transcript_saved;
         s_snapshot.last_saved_transcript_path = save_result.transcript_path;
         s_snapshot.last_transcript = transcript_text;
@@ -864,7 +862,7 @@ void HandleTranscriptionEvent(const transcription_service::Event& event)
         return;
     }
 
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     if (s_snapshot.phase == Phase::kTranscribing && !event.snapshot.request_in_flight) {
         s_snapshot.phase = s_snapshot.clip_saved ? Phase::kComplete : Phase::kFailed;
         s_snapshot.last_status_message = s_snapshot.clip_saved

@@ -7,6 +7,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "deferred_event.h"
 #include "followup_task_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -24,6 +25,7 @@ struct TaskContext {
 };
 
 std::mutex s_mutex;
+using EventScope = deferred_event::Scope<Event>;
 EventHandler s_event_handler = nullptr;
 void* s_event_context = nullptr;
 bool s_initialized = false;
@@ -52,17 +54,14 @@ Snapshot BuildSnapshotLocked()
     return snapshot;
 }
 
+// Queues the current snapshot for delivery once the active EventScope releases s_mutex.
+// Handlers never run under s_mutex (see deferred_event.h).
 void NotifyLocked()
 {
-    EventHandler handler = s_event_handler;
-    void* context = s_event_context;
-    if (handler == nullptr) {
+    if (s_event_handler == nullptr) {
         return;
     }
-    const Event event = {
-        .snapshot = BuildSnapshotLocked(),
-    };
-    handler(event, context);
+    EventScope::Post(s_event_handler, s_event_context, Event{.snapshot = BuildSnapshotLocked()});
 }
 
 // Runs the (blocking) Gemini audio transcription and publishes the result. The Gemini HTTP now
@@ -70,7 +69,7 @@ void NotifyLocked()
 void RunTranscription(std::unique_ptr<TaskContext> context)
 {
     if (!context || !context->clip || context->clip->empty()) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_request_in_flight = false;
         s_last_http_status = 0;
         s_last_status_message = "Transcription failed";
@@ -84,7 +83,7 @@ void RunTranscription(std::unique_ptr<TaskContext> context)
     const gemini_service::TranscriptionResult result = gemini_service::Transcribe(*context->clip);
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_request_in_flight = false;
         s_last_http_status = result.http_status;
         if (result.success) {
@@ -163,7 +162,7 @@ bool EnsureWorkerStarted()
 
 esp_err_t Init()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     if (s_initialized) {
         return ESP_OK;
     }
@@ -182,14 +181,14 @@ esp_err_t Init()
 
 void SetEventHandler(EventHandler handler, void* context)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     s_event_handler = handler;
     s_event_context = context;
 }
 
 Snapshot GetSnapshot()
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
+    EventScope lock(s_mutex);
     return BuildSnapshotLocked();
 }
 
@@ -203,7 +202,7 @@ bool BeginTranscription(recording_service::RecordedClipPtr clip)
     const std::string api_key = gemini_service::GetEffectiveApiKey();
 
     {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         if (s_request_in_flight) {
             s_last_status_message = "Transcription already running";
             s_last_error_code = "request_in_flight";
@@ -244,7 +243,7 @@ bool BeginTranscription(recording_service::RecordedClipPtr clip)
 
     TaskContext* task_context = new (std::nothrow) TaskContext();
     if (task_context == nullptr) {
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_request_in_flight = false;
         s_last_status_message = "Transcription unavailable";
         s_last_error_code = "task_context_alloc_failed";
@@ -264,7 +263,7 @@ bool BeginTranscription(recording_service::RecordedClipPtr clip)
     // s_request_in_flight admits one request at a time, so the one-slot queue is free.
     if (!EnsureWorkerStarted() || xQueueSend(s_request_queue, &task_context, 0) != pdTRUE) {
         delete task_context;
-        std::lock_guard<std::mutex> lock(s_mutex);
+        EventScope lock(s_mutex);
         s_request_in_flight = false;
         s_last_status_message = "Transcription unavailable";
         s_last_error_code = "task_start_failed";
