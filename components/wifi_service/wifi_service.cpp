@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "followup_task_config.h"
@@ -50,6 +51,11 @@ constexpr uint32_t kBackoffDelaysSec[] = {30, 60, 120, 300};
 // "ssid"/"password" keys are migrated on first load and kept in sync with the most recent
 // network so an older firmware still finds a network after a downgrade.
 constexpr const char* kNetworksKey = "networks";
+// Setup-network (AP) WPA2 password: generated once per device, shown on screen when setup
+// mode starts. Unambiguous characters only (no 0/o, 1/l/i), so it is easy to read and type.
+constexpr const char* kApPasswordKey = "ap_password";
+constexpr size_t kApPasswordLength = 10;
+constexpr char kApPasswordAlphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
 constexpr uint8_t kNetworksBlobVersion = 1;
 constexpr size_t kMaxSavedNetworks = 5;
 // Safety net for a scan that never reports. esp_wifi_stop() and esp_wifi_connect() both
@@ -115,6 +121,7 @@ int s_rssi = 0;
 std::string s_current_ssid;
 std::string s_ip_address;
 std::string s_ap_ssid;
+std::string s_ap_password;
 std::string s_ap_url = kApUrl;
 Credentials s_saved_credentials;  // most recently used saved network (s_saved_networks[0])
 Credentials s_active_credentials;
@@ -176,6 +183,7 @@ UiState BuildUiStateLocked()
         .ssid = s_current_ssid,
         .ip_address = s_ip_address,
         .ap_ssid = s_ap_ssid,
+        .ap_password = s_ap_password,
         .ap_url = s_ap_url,
         .rssi = s_rssi,
     };
@@ -289,13 +297,27 @@ void ConfigureAccessPointConfig(const std::string& ap_ssid, wifi_config_t* confi
         return;
     }
 
+    std::string password;
+    {
+        std::lock_guard<std::mutex> lock(s_state_mutex);
+        password = s_ap_password;
+    }
+
     *config = {};
     strlcpy(reinterpret_cast<char*>(config->ap.ssid), ap_ssid.c_str(), sizeof(config->ap.ssid));
     config->ap.ssid_len = ap_ssid.size();
     config->ap.channel = 1;
     config->ap.max_connection = 4;
-    config->ap.authmode = WIFI_AUTH_OPEN;
     config->ap.pmf_cfg.required = false;
+    if (password.size() >= 8) {
+        strlcpy(reinterpret_cast<char*>(config->ap.password), password.c_str(),
+                sizeof(config->ap.password));
+        config->ap.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        // EnsureAccessPointPassword runs before every AP start, so this should not happen.
+        ESP_LOGE(kTag, "No setup-network password; starting the setup network open");
+        config->ap.authmode = WIFI_AUTH_OPEN;
+    }
 }
 
 void ConfigureStationConfig(const Credentials& credentials, wifi_config_t* config)
@@ -542,6 +564,67 @@ bool ClearCredentialsFromNvs()
 Credentials ResolveStationCredentialsLocked()
 {
     return s_active_credentials.valid() ? s_active_credentials : s_saved_credentials;
+}
+
+void LoadAccessPointPassword()
+{
+    std::string password;
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) == ESP_OK) {
+        (void)LoadString(handle, kApPasswordKey, &password);
+        nvs_close(handle);
+    }
+    std::lock_guard<std::mutex> lock(s_state_mutex);
+    s_ap_password = std::move(password);
+}
+
+// Creates the setup-network password on first use. Runs on the transition worker (NVS writes
+// need its internal-RAM stack). The RNG gives true random numbers only while the radio is on
+// (esp_random.h), so the radio is started first if it is not running yet.
+void EnsureAccessPointPassword()
+{
+    {
+        std::lock_guard<std::mutex> lock(s_state_mutex);
+        if (s_ap_password.size() >= 8) {
+            return;
+        }
+    }
+
+    const esp_err_t start_err = esp_wifi_start();
+    if (start_err != ESP_OK) {
+        ESP_LOGW(kTag, "Radio start for password entropy failed: %s",
+                 esp_err_to_name(start_err));
+    }
+
+    constexpr size_t kAlphabetSize = sizeof(kApPasswordAlphabet) - 1;
+    // Largest multiple of the alphabet size that fits in a byte, to avoid modulo bias.
+    constexpr uint8_t kRejectFrom = static_cast<uint8_t>((256 / kAlphabetSize) * kAlphabetSize);
+    std::string password;
+    while (password.size() < kApPasswordLength) {
+        uint8_t byte = 0;
+        esp_fill_random(&byte, sizeof(byte));
+        if (byte < kRejectFrom) {
+            password.push_back(kApPasswordAlphabet[byte % kAlphabetSize]);
+        }
+    }
+
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, kApPasswordKey, password.c_str());
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        // Still use it this session; a new one is generated after the next reboot.
+        ESP_LOGW(kTag, "Saving setup-network password failed: %s", esp_err_to_name(err));
+    }
+
+    std::lock_guard<std::mutex> lock(s_state_mutex);
+    s_ap_password = std::move(password);
+    ESP_LOGI(kTag, "Setup-network password created");
 }
 
 void UpdateAccessPointIdentity()
@@ -1087,6 +1170,7 @@ void EnterAccessPointModeNow()
         return;
     }
 
+    EnsureAccessPointPassword();
     std::string ap_ssid;
     {
         std::lock_guard<std::mutex> lock(s_state_mutex);
@@ -1182,6 +1266,9 @@ void StartStationAttempt(bool allow_ap_fallback)
         credentials = ResolveStationCredentialsLocked();
         access_point_mode = s_access_point_mode;
         ap_ssid = s_ap_ssid;
+    }
+    if (access_point_mode) {
+        EnsureAccessPointPassword();
     }
     if (!credentials.valid()) {
         if (allow_ap_fallback) {
@@ -1888,6 +1975,7 @@ esp_err_t Init()
     }
 
     ReloadSavedCredentials();
+    LoadAccessPointPassword();
     s_initialized = true;
     ESP_LOGI(kTag, "Wi-Fi service initialized");
     return ESP_OK;

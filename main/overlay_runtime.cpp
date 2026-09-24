@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "design_tokens.h"
@@ -31,12 +32,14 @@ enum class CardModalPurpose : uint8_t {
     kStorageFormatting,
     kStorageFormatSuccess,
     kStorageFormatError,
+    kSetupNetwork,
 };
 
 std::mutex s_state_mutex;
 bool s_initialized = false;
 epaper_ui::CardModalState s_card_modal_state = {};
 CardModalPurpose s_card_modal_purpose = CardModalPurpose::kNone;
+std::string s_setup_network_body;  // kSetupNetwork's body, set by ShowSetupNetworkModal
 epaper_ui::SelectModalState s_select_modal_state = {};
 epaper_ui::KeyboardState s_keyboard_state = {};
 epaper_ui::ToastState s_toast_state = {};
@@ -117,6 +120,11 @@ epaper_ui::CardModalState BuildCardModalState(CardModalPurpose purpose)
         case CardModalPurpose::kStorageFormatError:
             state.title_text = "Format failed";
             state.body_text = "There was an error and the SD card could not be formatted.";
+            state.action_labels = {"OK"};
+            break;
+        case CardModalPurpose::kSetupNetwork:
+            state.title_text = "Set up Wi-Fi";
+            state.body_text = s_setup_network_body;
             state.action_labels = {"OK"};
             break;
         case CardModalPurpose::kNone:
@@ -650,6 +658,25 @@ esp_err_t DismissStorageModal()
     return DismissCardModal();
 }
 
+esp_err_t ShowSetupNetworkModal(const std::string& ssid, const std::string& password,
+                                const std::string& url)
+{
+    std::string address = url;
+    constexpr std::string_view kScheme = "http://";
+    if (address.compare(0, kScheme.size(), kScheme) == 0) {
+        address.erase(0, kScheme.size());
+    }
+    if (!address.empty() && address.back() == '/') {
+        address.pop_back();
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_state_mutex);
+        s_setup_network_body = "Wi-Fi: " + ssid + "\nPassword: " + password +
+                               "\nThen open " + address;
+    }
+    return ShowCardModal(CardModalPurpose::kSetupNetwork, "setup_network");
+}
+
 esp_err_t ShowSelectModal(const epaper_ui::SelectModalState& state)
 {
     bool changed = false;
@@ -1012,6 +1039,7 @@ app_interaction::InputResult HandleButtonEvent(const button_service::ButtonEvent
                             case CardModalPurpose::kStorageFormatError:
                             case CardModalPurpose::kStorageUsbNoCable:
                             case CardModalPurpose::kStorageUsbError:
+                            case CardModalPurpose::kSetupNetwork:
                                 play_click = true;
                                 break;
                             case CardModalPurpose::kStorageUsbEntering:

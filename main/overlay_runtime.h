@@ -50,6 +50,9 @@ esp_err_t ShowStorageModalUsbActive();
 esp_err_t ShowStorageModalUsbNoCable();
 esp_err_t ShowStorageModalUsbError();
 esp_err_t DismissStorageModal();
+// Setup-mode card: the setup network's name, WPA2 password and portal address, with OK.
+esp_err_t ShowSetupNetworkModal(const std::string& ssid, const std::string& password,
+                                const std::string& url);
 esp_err_t ShowSelectModal(const epaper_ui::SelectModalState& state);
 esp_err_t DismissSelectModal();
 esp_err_t ShowKeyboard(const epaper_ui::KeyboardState& state,

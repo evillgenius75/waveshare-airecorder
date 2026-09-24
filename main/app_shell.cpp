@@ -1247,6 +1247,19 @@ void HandleGeminiEvent(const gemini_service::Event& event, void*)
     }
 }
 
+// True while setup mode is on with its password ready. The setup card is shown on each
+// false -> true edge; before startup completes, Run() shows it once the screen is up.
+std::atomic<bool> s_setup_network_active = false;
+
+void ShowSetupNetworkCard(const wifi_service::UiState& ui_state)
+{
+    const esp_err_t err = overlay_runtime::ShowSetupNetworkModal(
+        ui_state.ap_ssid, ui_state.ap_password, ui_state.ap_url);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(kTag, "Setup network card failed: %s", esp_err_to_name(err));
+    }
+}
+
 void HandleWifiEvent(const wifi_service::Event& event, void*)
 {
     ESP_LOGI(kTag,
@@ -1285,6 +1298,13 @@ void HandleWifiEvent(const wifi_service::Event& event, void*)
 
     (void)SyncSettingsPageState(true);
     (void)SyncWifiPageState(true);
+
+    const bool setup_active =
+        event.ui_state.access_point_mode && !event.ui_state.ap_password.empty();
+    const bool was_setup_active = s_setup_network_active.exchange(setup_active);
+    if (setup_active && !was_setup_active && s_startup_complete.load(std::memory_order_relaxed)) {
+        ShowSetupNetworkCard(event.ui_state);
+    }
 }
 
 void HandleDispatchedButtonEvent(const button_service::ButtonEventInfo& event)
@@ -1857,6 +1877,9 @@ void Run()
                  esp_err_to_name(initial_err));
     }
     s_startup_complete.store(true, std::memory_order_relaxed);
+    if (s_setup_network_active.load(std::memory_order_relaxed)) {
+        ShowSetupNetworkCard(wifi_service::GetUiState());
+    }
 }
 
 }  // namespace app_shell

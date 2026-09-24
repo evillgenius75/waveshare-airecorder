@@ -807,7 +807,8 @@ Wi-Fi and time services follow the same boundary:
 
 Runtime-persisted settings live in service-owned NVS namespaces:
 
-- `wifi`: `ssid`, `password`
+- `wifi`: `networks` (up to five saved networks), legacy `ssid`/`password`,
+  `ap_password` (the setup network's WPA2 password)
 - `timezone`: `enabled`, `tz_name`, `location`, `time_src`, `ntp_sync`,
   `ntp_epoch`
 
@@ -822,10 +823,16 @@ The build-time Wi-Fi/time defaults live under `Folloup Settings`:
 
 Saved NVS Wi-Fi credentials take precedence over built-in sdkconfig
 credentials. If neither exists, or if `CONFIG_FOLLOWUP_WIFI_START_IN_AP_MODE`
-is enabled, `wifi_service` enters open AP setup mode and serves backend routes
+is enabled, `wifi_service` enters AP setup mode and serves backend routes
 at the SoftAP URL, normally `http://192.168.4.1`. The current backend
 intentionally exposes JSON/form endpoints only; it does not embed the old
 portal UI and does not add DNS captive-portal redirection.
+
+The setup network uses WPA2. Its password is 10 characters from an unambiguous
+alphabet, generated on first use (with the radio on, so the RNG has true
+entropy) and saved as `wifi/ap_password`, so it stays the same across reboots.
+Each time setup mode starts, `app_shell` shows a card with the network name,
+password and portal address (`overlay_runtime::ShowSetupNetworkModal`).
 
 The REST routes are thin adapters over `config_api` commands, defined in one
 table in `components/config_api/config_api_http.cpp`. Replies keep the portal's

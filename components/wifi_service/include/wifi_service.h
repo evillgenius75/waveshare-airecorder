@@ -51,6 +51,7 @@ struct UiState {
     std::string ssid;
     std::string ip_address;
     std::string ap_ssid;
+    std::string ap_password;  // WPA2 password of the setup network, shown on screen
     std::string ap_url;
     int rssi = 0;
 };
