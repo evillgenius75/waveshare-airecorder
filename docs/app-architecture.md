@@ -1099,7 +1099,7 @@ sound-cue catalog composition.
 This is the SDSPI/FATFS MicroSD wrapper ported from:
 
 ```text
-/Users/tieuvong/Desktop/folloup/sticky_port/Device_Peripheral_Demo/components/sd_card
+the Seeed reTerminal Sticky demo: Device_Peripheral_Demo/components/sd_card
 ```
 
 The component is mostly board-agnostic. It receives an `SdCardPins` struct and
@@ -1215,7 +1215,7 @@ status on top of this service rather than pushing those policies down into
 This is the raw mono SSD1677 e-paper panel driver ported from:
 
 ```text
-/Users/tieuvong/Development/followup/components/board_drivers/epaper_panel
+the upstream Followup firmware: components/board_drivers/epaper_panel
 ```
 
 The driver should stay board-agnostic. It receives an `EpaperPanelConfig` from

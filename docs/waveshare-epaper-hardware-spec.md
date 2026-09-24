@@ -117,7 +117,7 @@ All I2C peripherals share the same master bus (`GPIO41` SDA / `GPIO42` SCL).
 
 The AXP2101 PMIC owns system power, battery charging, and USB VBUS state. The
 firmware profile is configured in the `Pmic` constructor in
-[`components/board_epaper/epaper_board.cc`](/Users/tieuvong/Development/followup/components/board_epaper/epaper_board.cc).
+`components/board_epaper/epaper_board.cc` (upstream Followup firmware).
 
 ### 5.1 Power Rails
 
@@ -168,7 +168,7 @@ SD-card mode.
 
 The firmware uses **light sleep** (not deep sleep) for inactivity, driven by the
 device sleep service. The wake path is implemented in
-[`main/service_runtime/device_sleep_runtime.cc`](/Users/tieuvong/Development/followup/main/service_runtime/device_sleep_runtime.cc).
+`main/service_runtime/device_sleep_runtime.cc` (upstream Followup firmware).
 
 Entry sequence before `esp_light_sleep_start()`:
 

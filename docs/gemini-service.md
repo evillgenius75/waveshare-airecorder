@@ -52,8 +52,8 @@ product-facing reactions.
 
 Followup currently uses a single-file Gemini service implementation:
 
-- [`components/gemini_service/include/gemini_service.h`](/Users/tieuvong/Development/folloup-sticky/components/gemini_service/include/gemini_service.h)
-- [`components/gemini_service/gemini_service.cpp`](/Users/tieuvong/Development/folloup-sticky/components/gemini_service/gemini_service.cpp)
+- [`components/gemini_service/include/gemini_service.h`](../components/gemini_service/include/gemini_service.h)
+- [`components/gemini_service/gemini_service.cpp`](../components/gemini_service/gemini_service.cpp)
 
 Current internal responsibilities inside that component:
 
@@ -89,7 +89,7 @@ backend API takes precedence over the built-in key.
 
 The reproducible default is set in:
 
-- [`sdkconfig.defaults`](/Users/tieuvong/Development/folloup-sticky/sdkconfig.defaults)
+- [`sdkconfig.defaults`](../sdkconfig.defaults)
 
 Current default:
 
@@ -136,18 +136,15 @@ The current auth path is intentionally minimal:
 The current implementation uses ESP-IDF's `esp_http_client` with the CRT bundle
 for TLS validation.
 
-Followup does not yet implement:
-
-- Gemini file upload
-- transcription prompts
-- text generation
-- token counting
+Transcription (Files API upload plus `generateContent`), summary generation and token
+counting are implemented; see `gemini_service::Transcribe` and the
+`transcription_service` and `summary_service` components.
 
 ## Public C++ Snapshot Shapes
 
 Source of truth:
 
-- [`components/gemini_service/include/gemini_service.h`](/Users/tieuvong/Development/folloup-sticky/components/gemini_service/include/gemini_service.h)
+- [`components/gemini_service/include/gemini_service.h`](../components/gemini_service/include/gemini_service.h)
 
 ### `gemini_service::SettingsSnapshot`
 
@@ -347,13 +344,4 @@ The upstream Followup Gemini stack is broader than this implementation.
 
 Not yet ported:
 
-- transcription jobs
-- summary generation
-- token counting
-- archived audio upload
 - provider worker queue shared across multiple Gemini job types
-- frontend portal UI for Gemini settings
-
-When those features are ported, this document should be expanded rather than
-replaced so it remains accurate for this firmware's actual runtime behavior at each
-stage.
