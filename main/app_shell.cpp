@@ -55,6 +55,7 @@
 #include "time_page_runtime.h"
 #include "vibe_check_page_runtime.h"
 #include "wifi_page_runtime.h"
+#include "volume_service.h"
 
 namespace app_shell {
 namespace {
@@ -1538,6 +1539,9 @@ void InitButtonService()
 
 void InitFeedbackService()
 {
+    // Apply the saved speaker volume before any cue can play, so a device set to Off stays
+    // silent from the startup chime on.
+    (void)volume_service::Init();
     const esp_err_t err = feedback_service::Init();
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "Feedback service init failed: %s", esp_err_to_name(err));

@@ -29,6 +29,8 @@
 #include "wifi_page_interactions.h"
 #include "wifi_page_runtime.h"
 #include "wifi_service.h"
+#include "feedback_service.h"
+#include "volume_service.h"
 
 namespace page_input_runtime {
 namespace {
@@ -312,6 +314,15 @@ ButtonResult ApplySettingsActivateResult(const settings_page_interactions::Activ
     callbacks.show_onboarding = []() {
         // Deferred so the screen change happens after input dispatch; app_shell polls for it.
         onboarding_page_runtime::RequestManualLaunch();
+    };
+    callbacks.cycle_volume = []() {
+        const volume_service::Level level = volume_service::CycleLevel();
+        // Preview at the new level. Played directly: the rocker keys are silent keys, so an
+        // interaction cue would be dropped when the button is pressed with the rocker.
+        if (level != volume_service::Level::kOff) {
+            (void)feedback_service::Play(feedback_service::FeedbackEvent::kButtonClick);
+        }
+        ApplySettingsPageStateUpdate(display_service::RefreshMode::kPartial);
     };
     settings_page_interactions::ApplyPrimaryActivateResult(activation, callbacks);
     if (result.footer_item != footer_runtime::FooterFocusItem::kNone) {

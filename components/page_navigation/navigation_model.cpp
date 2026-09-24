@@ -79,6 +79,10 @@ NavigationModel BuildSettingsPageNavigationModel()
             NavigationItemSection::kSettingsPageMenu,
             NavigationItemRole::kSettingsManualOnboardingButton,
             4);
+    AddItem(model,
+            NavigationItemSection::kSettingsPageMenu,
+            NavigationItemRole::kSettingsVolumeButton,
+            5);
     AddFooterItems(model);
     return model;
 }
