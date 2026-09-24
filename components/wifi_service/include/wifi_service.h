@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "esp_err.h"
-#include "esp_http_server.h"
 #include "esp_wifi_types.h"
 
 namespace wifi_service {
@@ -63,12 +62,10 @@ struct Event {
 };
 
 using EventHandler = void (*)(const Event& event, void* context);
-using PortalRouteRegistrar = void (*)(httpd_handle_t server, void* context);
 
 esp_err_t Init();
 void Start();
 void SetEventHandler(EventHandler handler, void* context);
-void SetPortalRouteRegistrar(PortalRouteRegistrar registrar, void* context);
 
 // Returns true while it is a bad moment to put the radio on air. A scan is the noisiest
 // RF the device does -- channel hopping at TX power -- and an e-paper refresh drives the

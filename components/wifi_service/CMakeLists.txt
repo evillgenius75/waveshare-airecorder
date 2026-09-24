@@ -1,8 +1,8 @@
 idf_component_register(
     SRCS "wifi_service.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES esp_event esp_http_server esp_netif esp_timer esp_wifi lwip nvs_flash task_config
-    PRIV_REQUIRES espressif__cjson
+    REQUIRES esp_event esp_netif esp_timer esp_wifi lwip nvs_flash task_config
+    PRIV_REQUIRES config_api esp_http_server espressif__cjson
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

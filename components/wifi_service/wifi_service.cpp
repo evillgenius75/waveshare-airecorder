@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "cJSON.h"
+#include "config_api.h"
+#include "config_api_http.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -58,15 +60,10 @@ constexpr int64_t kScanTimeoutUs = 12 * 1000 * 1000;
 // tearing down an association, so give the driver a few short beats to settle.
 constexpr int kScanStartAttempts = 5;
 constexpr uint32_t kScanStartRetryDelayMs = 100;
-constexpr size_t kMaxPortalPayloadLen = 512;
 constexpr uint32_t kTransitionTaskStackWords = 8192;
 constexpr UBaseType_t kTransitionQueueDepth = 4;
 constexpr uint32_t kCallbackTaskStackWords = 6144;
 constexpr size_t kMaxPendingCallbacks = 16;
-constexpr const char* kPortalApiScanUri = "/api/scan";
-constexpr const char* kPortalApiConfigureUri = "/api/configure";
-constexpr const char* kPortalApiStatusUri = "/api/status";
-constexpr const char* kPortalApiDisconnectUri = "/api/disconnect";
 constexpr const char* kPortalIndexJsUri = "/index.js";
 constexpr const char* kPortalIndexCssUri = "/index.css";
 
@@ -148,8 +145,6 @@ constexpr int kScanDeferStartMs = 400;
 // Let the panel finish settling after the refresh reports done before the radio goes on
 // air, rather than starting the instant the last transaction completes.
 constexpr int kScanDeferSettleMs = 150;
-PortalRouteRegistrar s_portal_registrar = nullptr;
-void* s_portal_registrar_context = nullptr;
 QueueHandle_t s_transition_queue = nullptr;
 TaskHandle_t s_transition_task = nullptr;
 TaskHandle_t s_callback_task = nullptr;
@@ -568,30 +563,6 @@ void StopConfigPortal()
     s_portal_server = nullptr;
 }
 
-std::string UrlDecode(const std::string& value)
-{
-    std::string decoded;
-    decoded.reserve(value.size());
-    for (size_t i = 0; i < value.size(); ++i) {
-        if (value[i] == '+') {
-            decoded.push_back(' ');
-            continue;
-        }
-        if (value[i] == '%' && i + 2 < value.size()) {
-            char hex[3] = {value[i + 1], value[i + 2], '\0'};
-            char* end = nullptr;
-            long parsed = std::strtol(hex, &end, 16);
-            if (end != nullptr && *end == '\0') {
-                decoded.push_back(static_cast<char>(parsed));
-                i += 2;
-                continue;
-            }
-        }
-        decoded.push_back(value[i]);
-    }
-    return decoded;
-}
-
 const char* AuthModeToString(wifi_auth_mode_t auth_mode)
 {
     switch (auth_mode) {
@@ -614,73 +585,10 @@ const char* AuthModeToString(wifi_auth_mode_t auth_mode)
     }
 }
 
-std::string ReadRequestBody(httpd_req_t* request)
+config_api::JsonPtr BuildStatusJson(const UiState& ui_state, const ScanSnapshot* scan_snapshot)
 {
-    if (request == nullptr || request->content_len <= 0) {
-        return {};
-    }
-
-    std::string body(static_cast<size_t>(request->content_len), '\0');
-    size_t offset = 0;
-    while (offset < body.size()) {
-        const int received = httpd_req_recv(request, body.data() + offset, body.size() - offset);
-        if (received <= 0) {
-            return {};
-        }
-        offset += static_cast<size_t>(received);
-    }
-    return body;
-}
-
-std::string JsonString(cJSON* root)
-{
-    if (root == nullptr) {
-        return "{}";
-    }
-    char* raw = cJSON_PrintUnformatted(root);
-    if (raw == nullptr) {
-        return "{}";
-    }
-    std::string json(raw);
-    cJSON_free(raw);
-    return json;
-}
-
-esp_err_t SendJsonResponse(httpd_req_t* request, int status_code, cJSON* root)
-{
-    if (request == nullptr) {
-        if (root != nullptr) {
-            cJSON_Delete(root);
-        }
-        return ESP_FAIL;
-    }
-
-    const std::string payload = JsonString(root);
-    if (root != nullptr) {
-        cJSON_Delete(root);
-    }
-
-    switch (status_code) {
-        case 200:
-            httpd_resp_set_status(request, HTTPD_200);
-            break;
-        case 400:
-            httpd_resp_set_status(request, HTTPD_400);
-            break;
-        default:
-            httpd_resp_set_status(request, HTTPD_500);
-            break;
-    }
-    httpd_resp_set_type(request, "application/json; charset=utf-8");
-    return httpd_resp_send(request, payload.c_str(), payload.size());
-}
-
-cJSON* BuildStatusJson(const UiState& ui_state, const ScanSnapshot* scan_snapshot,
-                       bool include_networks, const char* message, bool success)
-{
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", success);
-    cJSON_AddStringToObject(root, "message", message != nullptr ? message : "");
+    config_api::JsonPtr json(cJSON_CreateObject());
+    cJSON* root = json.get();
     cJSON_AddBoolToObject(root, "wifi_enabled", ui_state.wifi_enabled);
     cJSON_AddBoolToObject(root, "connected", ui_state.connected);
     cJSON_AddBoolToObject(root, "access_point_mode", ui_state.access_point_mode);
@@ -695,23 +603,21 @@ cJSON* BuildStatusJson(const UiState& ui_state, const ScanSnapshot* scan_snapsho
                               scan_snapshot->state == ScanState::kRunning);
     }
 
-    if (include_networks) {
-        cJSON* networks = cJSON_AddArrayToObject(root, "networks");
-        if (scan_snapshot != nullptr) {
-            for (const ScannedNetwork& network : scan_snapshot->networks) {
-                cJSON* item = cJSON_CreateObject();
-                cJSON_AddStringToObject(item, "ssid", network.ssid.c_str());
-                cJSON_AddNumberToObject(item, "rssi", network.rssi);
-                cJSON_AddNumberToObject(item, "encryption_type",
-                                        static_cast<int>(network.auth_mode));
-                cJSON_AddBoolToObject(item, "is_open", network.IsOpen());
-                cJSON_AddStringToObject(item, "security", AuthModeToString(network.auth_mode));
-                cJSON_AddItemToArray(networks, item);
-            }
+    cJSON* networks = cJSON_AddArrayToObject(root, "networks");
+    if (scan_snapshot != nullptr) {
+        for (const ScannedNetwork& network : scan_snapshot->networks) {
+            cJSON* item = cJSON_CreateObject();
+            cJSON_AddStringToObject(item, "ssid", network.ssid.c_str());
+            cJSON_AddNumberToObject(item, "rssi", network.rssi);
+            cJSON_AddNumberToObject(item, "encryption_type",
+                                    static_cast<int>(network.auth_mode));
+            cJSON_AddBoolToObject(item, "is_open", network.IsOpen());
+            cJSON_AddStringToObject(item, "security", AuthModeToString(network.auth_mode));
+            cJSON_AddItemToArray(networks, item);
         }
     }
 
-    return root;
+    return json;
 }
 
 esp_err_t RegisterRoute(httpd_handle_t server, const httpd_uri_t* handler)
@@ -878,125 +784,70 @@ esp_err_t HandlePortalIndexCss(httpd_req_t* request)
     return SendEmbeddedAsset(request, kIndexCssStart, kIndexCssEnd, "text/css; charset=utf-8");
 }
 
-esp_err_t HandlePortalStatus(httpd_req_t* request)
+// --- Config commands (served over the portal's HTTP routes by config_api) ----------------------
+
+config_api::Response CommandStatus(const cJSON*)
 {
     const UiState ui_state = GetUiState();
     const ScanSnapshot snapshot = GetScanSnapshot();
-    return SendJsonResponse(request, 200,
-                            BuildStatusJson(ui_state, &snapshot, true,
-                                            ui_state.connected ? "Connected" : "Not connected",
-                                            true));
+    return config_api::Ok(ui_state.connected ? "Connected" : "Not connected",
+                          BuildStatusJson(ui_state, &snapshot));
 }
 
-esp_err_t HandlePortalScan(httpd_req_t* request)
+config_api::Response CommandScan(const cJSON*)
 {
     const UiState ui_state = GetUiState();
     const ScanSnapshot snapshot = GetScanSnapshot();
     if (snapshot.state == ScanState::kRunning) {
-        return SendJsonResponse(request, 200,
-                                BuildStatusJson(ui_state, &snapshot, true,
-                                                "Scanning for networks", true));
+        return config_api::Ok("Scanning for networks", BuildStatusJson(ui_state, &snapshot));
     }
     if (snapshot.state == ScanState::kComplete) {
-        return SendJsonResponse(request, 200,
-                                BuildStatusJson(ui_state, &snapshot, true,
-                                                "Network scan complete", true));
+        return config_api::Ok("Network scan complete", BuildStatusJson(ui_state, &snapshot));
     }
     if (!StartNetworkScan()) {
-        return SendJsonResponse(request, 500,
-                                BuildStatusJson(ui_state, nullptr, true,
-                                                "Scan failed", false));
+        return config_api::Error(500, "scan_failed", "Scan failed", {},
+                                 BuildStatusJson(ui_state, nullptr));
     }
     const UiState running_ui_state = GetUiState();
     const ScanSnapshot running_snapshot = GetScanSnapshot();
-    return SendJsonResponse(request, 200,
-                            BuildStatusJson(running_ui_state, &running_snapshot, true,
-                                            "Scanning for networks", true));
+    return config_api::Ok("Scanning for networks",
+                          BuildStatusJson(running_ui_state, &running_snapshot));
 }
 
-esp_err_t HandlePortalConfigure(httpd_req_t* request)
+config_api::Response CommandConnect(const cJSON* args)
 {
-    if (request == nullptr ||
-        request->content_len <= 0 ||
-        request->content_len > static_cast<int>(kMaxPortalPayloadLen)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "Invalid Wi-Fi configuration payload");
-        return SendJsonResponse(request, 400, root);
-    }
-
-    const std::string body = ReadRequestBody(request);
-    std::string ssid;
-    std::string password;
-    if (!body.empty() && body.front() == '{') {
-        cJSON* root = cJSON_ParseWithLength(body.c_str(), body.size());
-        if (root == nullptr) {
-            cJSON* error = cJSON_CreateObject();
-            cJSON_AddBoolToObject(error, "success", false);
-            cJSON_AddStringToObject(error, "message", "Invalid JSON body");
-            return SendJsonResponse(request, 400, error);
-        }
-        cJSON* ssid_item = cJSON_GetObjectItemCaseSensitive(root, "ssid");
-        cJSON* password_item = cJSON_GetObjectItemCaseSensitive(root, "password");
-        if (cJSON_IsString(ssid_item) && ssid_item->valuestring != nullptr) {
-            ssid = ssid_item->valuestring;
-        }
-        if (cJSON_IsString(password_item) && password_item->valuestring != nullptr) {
-            password = password_item->valuestring;
-        }
-        cJSON_Delete(root);
-    } else {
-        char ssid_buffer[65] = {};
-        char password_buffer[65] = {};
-        if (httpd_query_key_value(body.c_str(), "ssid", ssid_buffer, sizeof(ssid_buffer)) ==
-            ESP_OK) {
-            ssid = UrlDecode(ssid_buffer);
-        }
-        httpd_query_key_value(body.c_str(), "password", password_buffer,
-                              sizeof(password_buffer));
-        password = UrlDecode(password_buffer);
-    }
-
+    const std::string ssid = config_api::StringArg(args, "ssid");
+    const std::string password = config_api::StringArg(args, "password");
     if (ssid.empty()) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "SSID required");
-        return SendJsonResponse(request, 400, root);
+        return config_api::Error(400, "missing_ssid", "SSID required", "ssid");
     }
-
     if (!ConnectToNetwork(ssid, password, true)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "Failed to start Wi-Fi connection");
-        return SendJsonResponse(request, 500, root);
+        return config_api::Error(500, "connect_failed", "Failed to start Wi-Fi connection");
     }
 
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", true);
-    const std::string message = "Connecting to " + ssid;
-    cJSON_AddStringToObject(root, "message", message.c_str());
-    cJSON_AddStringToObject(root, "ssid", ssid.c_str());
-    return SendJsonResponse(request, 200, root);
+    config_api::JsonPtr data(cJSON_CreateObject());
+    cJSON_AddStringToObject(data.get(), "ssid", ssid.c_str());
+    return config_api::Ok("Connecting to " + ssid, std::move(data));
 }
 
-esp_err_t HandlePortalDisconnect(httpd_req_t* request)
+config_api::Response CommandDisconnect(const cJSON*)
 {
     const bool was_connected = IsConnected();
     const UiState previous = GetUiState();
     if (!DisconnectFromNetwork(true)) {
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "success", false);
-        cJSON_AddStringToObject(root, "message", "Failed to disconnect Wi-Fi");
-        return SendJsonResponse(request, 500, root);
+        return config_api::Error(500, "disconnect_failed", "Failed to disconnect Wi-Fi");
     }
+    return config_api::Ok(was_connected
+                              ? "Disconnected and cleared credentials for " + previous.ssid
+                              : "Cleared saved Wi-Fi credentials");
+}
 
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", true);
-    const std::string message =
-        was_connected ? "Disconnected and cleared credentials for " + previous.ssid
-                      : "Cleared saved Wi-Fi credentials";
-    cJSON_AddStringToObject(root, "message", message.c_str());
-    return SendJsonResponse(request, 200, root);
+void RegisterConfigCommands()
+{
+    config_api::RegisterCommand("wifi_status", CommandStatus);
+    config_api::RegisterCommand("wifi_scan", CommandScan);
+    config_api::RegisterCommand("wifi_connect", CommandConnect);
+    config_api::RegisterCommand("wifi_disconnect", CommandDisconnect);
 }
 
 void StartConfigPortal()
@@ -1006,9 +857,8 @@ void StartConfigPortal()
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    // Root + WiFi API (scan/configure/status/disconnect) + portal assets (index.js/index.css) plus
-    // the timezone_service and gemini_service portal routes registered via the registrar below.
-    config.max_uri_handlers = 24;
+    // Portal page + assets (/, index.js, index.css) and the config_api REST routes.
+    config.max_uri_handlers = 3 + config_api::http::RouteCount() + 4;  // + spare
     config.lru_purge_enable = true;
     // Internal RAM is tight in AP mode, so lwIP can stall briefly waiting for TX buffers; the
     // 5s default aborted portal asset sends mid-transfer.
@@ -1027,30 +877,6 @@ void StartConfigPortal()
         .handler = HandlePortalRoot,
         .user_ctx = nullptr,
     };
-    httpd_uri_t scan = {
-        .uri = kPortalApiScanUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalScan,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t configure = {
-        .uri = kPortalApiConfigureUri,
-        .method = HTTP_POST,
-        .handler = HandlePortalConfigure,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t status = {
-        .uri = kPortalApiStatusUri,
-        .method = HTTP_GET,
-        .handler = HandlePortalStatus,
-        .user_ctx = nullptr,
-    };
-    httpd_uri_t disconnect = {
-        .uri = kPortalApiDisconnectUri,
-        .method = HTTP_POST,
-        .handler = HandlePortalDisconnect,
-        .user_ctx = nullptr,
-    };
     httpd_uri_t index_js = {
         .uri = kPortalIndexJsUri,
         .method = HTTP_GET,
@@ -1065,12 +891,9 @@ void StartConfigPortal()
     };
 
     if (RegisterRoute(s_portal_server, &root) != ESP_OK ||
-        RegisterRoute(s_portal_server, &scan) != ESP_OK ||
-        RegisterRoute(s_portal_server, &configure) != ESP_OK ||
-        RegisterRoute(s_portal_server, &status) != ESP_OK ||
-        RegisterRoute(s_portal_server, &disconnect) != ESP_OK ||
         RegisterRoute(s_portal_server, &index_js) != ESP_OK ||
-        RegisterRoute(s_portal_server, &index_css) != ESP_OK) {
+        RegisterRoute(s_portal_server, &index_css) != ESP_OK ||
+        config_api::http::RegisterRoutes(s_portal_server) != ESP_OK) {
         StopConfigPortal();
         return;
     }
@@ -1079,17 +902,6 @@ void StartConfigPortal()
     // unknown hosts resolved to us by the DNS server below) to the portal root.
     httpd_register_err_handler(s_portal_server, HTTPD_404_NOT_FOUND, HandleCaptivePortalRedirect);
     StartCaptiveDns();
-
-    PortalRouteRegistrar registrar = nullptr;
-    void* context = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(s_state_mutex);
-        registrar = s_portal_registrar;
-        context = s_portal_registrar_context;
-    }
-    if (registrar != nullptr) {
-        registrar(s_portal_server, context);
-    }
 
     ESP_LOGI(kTag, "Wi-Fi backend active at %s", GetUiState().ap_url.c_str());
 }
@@ -1976,6 +1788,7 @@ esp_err_t Init()
     if (s_initialized) {
         return ESP_OK;
     }
+    RegisterConfigCommands();
 
     esp_timer_create_args_t timer_args = {
         .callback = OnWifiConnectTimeout,
@@ -2057,13 +1870,6 @@ void SetScanDeferProvider(ScanDeferProvider provider, void* context)
     std::lock_guard<std::mutex> lock(s_state_mutex);
     s_scan_defer_provider = provider;
     s_scan_defer_context = context;
-}
-
-void SetPortalRouteRegistrar(PortalRouteRegistrar registrar, void* context)
-{
-    std::lock_guard<std::mutex> lock(s_state_mutex);
-    s_portal_registrar = registrar;
-    s_portal_registrar_context = context;
 }
 
 void SetWifiEnabled(bool enabled)
