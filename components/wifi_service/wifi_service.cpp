@@ -1122,6 +1122,47 @@ void EnterAccessPointModeNow()
     Notify(State::kAccessPointMode, GetUiState().ap_ssid);
 }
 
+// In setup mode with the setup network already up, points only the station interface at the
+// new network and leaves the radio running. A stop/start instead restarts the setup network,
+// which drops the phone on the portal (mid-DHCP, or before the page can see the result) on
+// every connection attempt. Returns false when the radio is not in a state to do this; the
+// caller then falls back to a full restart.
+bool RetargetStationKeepingAccessPoint(wifi_config_t* station_config)
+{
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    // The portal runs only while the radio is started in AP or AP+STA mode (StopWifiNow stops
+    // the portal before the radio).
+    if (s_portal_server == nullptr || esp_wifi_get_mode(&mode) != ESP_OK ||
+        (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA)) {
+        return false;
+    }
+
+    if (mode == WIFI_MODE_APSTA) {
+        // The station may still be joining the previous network; set_config rejects that.
+        const esp_err_t err = esp_wifi_disconnect();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGW(kTag, "esp_wifi_disconnect before retarget failed: %s",
+                     esp_err_to_name(err));
+            return false;
+        }
+    } else {
+        const esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK) {
+            ESP_LOGW(kTag, "Switching setup mode to AP+STA failed: %s", esp_err_to_name(err));
+            return false;
+        }
+    }
+
+    const esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, station_config);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "Station config for retarget failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(kTag, "Setup network kept up; station retargeted to ssid=%.32s",
+             reinterpret_cast<const char*>(station_config->sta.ssid));
+    return true;
+}
+
 void StartStationAttempt(bool allow_ap_fallback)
 {
     ResolveInFlightScan(ESP_ERR_INVALID_STATE);
@@ -1216,16 +1257,18 @@ void StartStationAttempt(bool allow_ap_fallback)
         ConfigureAccessPointConfig(ap_ssid, &ap_config);
     }
 
-    esp_err_t err = esp_wifi_stop();
-    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT && err != ESP_ERR_WIFI_NOT_STARTED) {
-        ESP_ERROR_CHECK(err);
+    if (!access_point_mode || !RetargetStationKeepingAccessPoint(&station_config)) {
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT && err != ESP_ERR_WIFI_NOT_STARTED) {
+            ESP_ERROR_CHECK(err);
+        }
+        ESP_ERROR_CHECK(esp_wifi_set_mode(access_point_mode ? WIFI_MODE_APSTA : WIFI_MODE_STA));
+        if (access_point_mode) {
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+        }
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &station_config));
+        ESP_ERROR_CHECK(esp_wifi_start());
     }
-    ESP_ERROR_CHECK(esp_wifi_set_mode(access_point_mode ? WIFI_MODE_APSTA : WIFI_MODE_STA));
-    if (access_point_mode) {
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
-    }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &station_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
 
     {
         std::lock_guard<std::mutex> lock(s_state_mutex);
