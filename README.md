@@ -63,11 +63,13 @@ Updates arrive in this order, starting with reliability and safety so everything
 
 | Stage | What you get |
 | --- | --- |
-| 1. Solid foundations | Recordings stay safe even if power is lost mid-save; setup requires the code on Castor's screen; your API key is stored encrypted |
-| 2. Capture anything, anytime | Longer recordings; record again right away while the last one is still transcribing; record offline and get transcripts automatically once back online |
-| 3. Setup from your phone | The Castor setup app for Android phones and Chrome on computers |
-| 4. Smarter results | Faster transcripts; automatic titles and tags; to-dos and due dates picked up from what you say |
-| 5. Always-on stickies | Stickies stay on screen even while Castor sleeps; longer battery life |
-| 6. iPhone app and updates | Castor apps for iPhone and Android; software updates over Wi-Fi, no cable needed |
-| 7. Reminders | Castor chimes when a to-do is due; a weekly review; ask questions about your notes |
-| 8. Your notes everywhere | Browse and edit notes in the app; export to Markdown, Google Tasks, Google Calendar, and Notion |
+| 1. Solid foundations | Castor remembers up to five Wi-Fi networks and reconnects on its own, including after sleep or leaving range; saved networks connect without retyping the password; recordings stay safe even if power is lost mid-save |
+| 2. Everyday comforts | Home is the first button in the menu, and holding the rocker's middle key jumps Home from anywhere; a speaker volume setting (Off, Low, Medium, High) |
+| 3. Safer setup | Setup requires the code shown on Castor's screen; your API key and Wi-Fi passwords are stored encrypted |
+| 4. Capture anything, anytime | Longer recordings; record again right away while the last one is still transcribing; record offline and get transcripts automatically once back online |
+| 5. Setup from your phone | The Castor setup app for Android phones and Chrome on computers: Wi-Fi, API key, volume, and other settings, with no rocker typing |
+| 6. Smarter results | Faster transcripts; automatic titles and tags; to-dos and due dates picked up from what you say |
+| 7. Always-on stickies | Stickies stay on screen even while Castor sleeps; longer battery life |
+| 8. iPhone app and updates | Castor apps for iPhone and Android; software updates over Wi-Fi, no cable needed |
+| 9. Reminders | Castor chimes when a to-do is due; a weekly review; ask questions about your notes |
+| 10. Your notes everywhere | Browse and edit notes in the app; export to Markdown, Google Tasks, Google Calendar, and Notion |
